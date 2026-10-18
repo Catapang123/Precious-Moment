@@ -1,0 +1,22 @@
+{
+  "name": "precious-moments",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Precious Moments booking, payment, and operations platform",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "report": "node scripts/report.mjs",
+    "report:py": "python scripts/report.py",
+    "setup": "node scripts/bootstrap.mjs",
+    "test": "node scripts/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
+    "express": "^4.21.2"
+  }
+}

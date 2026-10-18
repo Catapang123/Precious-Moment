@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="18" fill="#c72b5c"/>
+  <circle cx="32" cy="32" r="24" fill="none" stroke="#ffd4e1" stroke-width="1.5" stroke-dasharray="2 4" opacity=".8"/>
+  <text x="32" y="41" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="25" fill="#fff7f3">PM</text>
+</svg>
