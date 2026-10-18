@@ -1,0 +1,32 @@
+name: Monthly operations report
+
+on:
+  schedule:
+    # 01:00 UTC on the first of every month — reports the previous month.
+    - cron: '0 1 1 * *'
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "SUPABASE_URL secret is not set; skipping the scheduled report."
+            exit 0
+          fi
+          python scripts/report.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: monthly-operations-report
+          path: reports/*.csv
+          if-no-files-found: ignore
