@@ -45,6 +45,8 @@ function paintRules(value) {
 
 function setTab(mode, { focus = false } = {}) {
   const active = mode === 'login' ? 'login' : 'register';
+  const tabBar = document.querySelector('.auth-tabs');
+  if (tabBar) tabBar.dataset.activeTab = active;
   tabs.forEach((tab) => {
     const selected = tab.dataset.tab === active;
     tab.setAttribute('aria-selected', String(selected));

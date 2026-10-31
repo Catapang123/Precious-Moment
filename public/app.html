@@ -60,7 +60,19 @@
         </div>
       </header>
       <main class="app-view" id="view">
-        <div class="load-screen"><span class="spinner" aria-hidden="true"></span> Opening your dashboard...</div>
+        <div class="boot-skeleton" aria-hidden="true">
+          <div class="boot-stats">
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+            <span class="skeleton"></span>
+          </div>
+          <div class="boot-grid">
+            <div class="skeleton boot-block"></div>
+            <div class="skeleton boot-block"></div>
+          </div>
+        </div>
+        <p class="sr-only" role="status">Opening your dashboard…</p>
       </main>
     </div>
 

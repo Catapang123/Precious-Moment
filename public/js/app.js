@@ -158,6 +158,7 @@ const state = {
   lastFocused: null,
   lastModalFocus: null,
   cancelArmed: false,
+  drawerOpening: false,
 };
 
 /* ---------- Small helpers ---------- */
@@ -396,18 +397,29 @@ function go(view) {
   }
 }
 
+let lastViewIndex = null;
+
+function viewPosition(view) {
+  return (NAV[state.user?.role] || []).findIndex((item) => item.key === view);
+}
+
 async function navigate(view) {
   if (!state.user) return;
   const allowed = NAV[state.user.role].map((item) => item.key);
   state.view = allowed.includes(view) ? view : 'overview';
+  const position = viewPosition(state.view);
+  const direction = lastViewIndex === null || position >= lastViewIndex ? 1 : -1;
+  lastViewIndex = position;
   updatePageMeta();
   renderChrome();
   if (state.view === 'reports' && !state.report && !state.reportLoading) {
     renderView();
+    runViewTransition(direction);
     await loadReport();
     return;
   }
   renderView();
+  runViewTransition(direction);
   window.scrollTo(0, 0);
 }
 
@@ -433,6 +445,7 @@ function renderView() {
     else if (state.view === 'account') renderAccount();
     else renderAdminOverview();
   }
+  primeRows();
 }
 
 /* ---------- Customer overview ---------- */
@@ -1290,8 +1303,9 @@ async function submitBooking(form) {
 function showBookingSuccess(booking) {
   state.lastModalFocus = document.activeElement;
   modalRoot.innerHTML = `
-    <div class="modal-overlay open" data-modal-overlay>
+    <div class="modal-overlay" data-modal-overlay>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="success-title">
+        <button class="modal-close" type="button" data-modal-close aria-label="Close">${ICONS.close}</button>
         <div class="modal-icon">${ICONS.check}</div>
         <h2 id="success-title">Request received.</h2>
         <p>The studio will check the calendar and get back to you with availability and the reservation details.</p>
@@ -1315,6 +1329,7 @@ function showBookingSuccess(booking) {
         </div>
       </div>
     </div>`;
+  revealLayer(modalRoot);
   syncBodyLock();
   modalRoot.querySelector('[data-success-view]')?.focus();
 }
@@ -1725,8 +1740,9 @@ async function sendAssistant(message) {
 function showTemporaryPassword(name, email, temporary) {
   state.lastModalFocus = document.activeElement;
   modalRoot.innerHTML = `
-    <div class="modal-overlay open" data-modal-overlay>
+    <div class="modal-overlay" data-modal-overlay>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="temp-title">
+        <button class="modal-close" type="button" data-modal-close aria-label="Close">${ICONS.close}</button>
         <h2 id="temp-title">Temporary password</h2>
         <p>Hand this to <strong>${esc(name)}</strong> (${esc(email)}) privately. It is shown once, and two-factor was reset for the account.</p>
         <div class="modal-ref"><code>${esc(temporary)}</code></div>
@@ -1734,6 +1750,7 @@ function showTemporaryPassword(name, email, temporary) {
         <div class="modal-actions"><button class="btn btn-primary" type="button" data-modal-close>Done</button></div>
       </div>
     </div>`;
+  revealLayer(modalRoot);
   syncBodyLock();
   modalRoot.querySelector('[data-modal-close]')?.focus();
 }
@@ -2127,7 +2144,7 @@ function drawerTemplate(booking) {
   const contact = booking.customer || {};
 
   return `
-    <div class="drawer-overlay open">
+    <div class="drawer-overlay">
       <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
         <header class="drawer-head">
           <div>
@@ -2351,9 +2368,96 @@ function drawerTemplate(booking) {
     </div>`;
 }
 
+/* ---------- Motion helpers ---------- */
+
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+// Layers are injected closed, then opened on the next frame so the CSS
+// transition actually runs. Re-rendering an open layer skips the entrance.
+function revealLayer(root, { animate = true, fresh = false } = {}) {
+  const overlay = root.firstElementChild;
+  if (!overlay) return null;
+  if (fresh) overlay.classList.add('is-fresh');
+  if (animate && !reduceMotion.matches) {
+    requestAnimationFrame(() => overlay.classList.add('open'));
+    // Hidden tabs can throttle rAF; never leave a layer stuck closed.
+    setTimeout(() => overlay.classList.add('open'), 120);
+  } else {
+    overlay.classList.add('open');
+  }
+  return overlay;
+}
+
+function unmountLayer(root) {
+  const overlay = root.firstElementChild;
+  if (!overlay) return;
+  const finish = () => {
+    if (root.firstElementChild === overlay) root.innerHTML = '';
+    syncBodyLock();
+  };
+  if (reduceMotion.matches) {
+    finish();
+    return;
+  }
+  overlay.classList.remove('open');
+  overlay.classList.add('closing');
+  overlay.addEventListener('transitionend', (event) => {
+    if (event.target === overlay) finish();
+  }, { once: true });
+  setTimeout(finish, 380);
+}
+
+function runViewTransition(direction = 1) {
+  if (reduceMotion.matches) return;
+  viewRoot.classList.remove('view-enter', 'from-back');
+  void viewRoot.offsetWidth;
+  viewRoot.classList.toggle('from-back', direction < 0);
+  viewRoot.classList.add('view-enter');
+  clearTimeout(runViewTransition.timer);
+  runViewTransition.timer = setTimeout(() => viewRoot.classList.remove('view-enter', 'from-back'), 620);
+}
+
+// Stagger the first rows of each collection so a fresh view settles in order.
+function primeRows() {
+  const groups = viewRoot.querySelectorAll('.data-table tbody, .booking-list, .account-list, .activity-list');
+  groups.forEach((group) => {
+    const rows = Array.from(group.children).slice(0, 12);
+    if (rows.length < 2) return;
+    group.classList.add('stagger-in');
+    rows.forEach((row, index) => row.style.setProperty('--row', String(index)));
+  });
+  clearTimeout(primeRows.timer);
+  primeRows.timer = setTimeout(() => {
+    viewRoot.querySelectorAll('.stagger-in').forEach((group) => group.classList.remove('stagger-in'));
+  }, 900);
+}
+
+function closeAssistant() {
+  const panel = document.getElementById('assistant-panel');
+  if (!panel || panel.hidden || panel.dataset.closing === '1') return;
+  panel.dataset.closing = '1';
+  panel.classList.remove('is-open');
+  panel.classList.add('is-closing');
+  document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', 'false');
+  const finish = () => {
+    if (panel.dataset.closing !== '1') return;
+    panel.hidden = true;
+    panel.classList.remove('is-closing');
+    delete panel.dataset.closing;
+  };
+  if (reduceMotion.matches) finish();
+  else setTimeout(finish, 240);
+}
+
 function renderDrawer(booking, scroll = 0) {
+  const wasOpen = Boolean(drawerRoot.firstElementChild);
+  // The loading skeleton is already mounted, so the first real render still
+  // counts as an entrance and gets the section cascade.
+  const fresh = !wasOpen || state.drawerOpening;
+  state.drawerOpening = false;
   state.activeBooking = booking;
   drawerRoot.innerHTML = drawerTemplate(booking);
+  revealLayer(drawerRoot, { animate: !wasOpen, fresh });
   syncBodyLock();
   const body = drawerRoot.querySelector('.drawer-body');
   if (body) body.scrollTop = scroll;
@@ -2362,8 +2466,9 @@ function renderDrawer(booking, scroll = 0) {
 async function openBooking(id) {
   state.lastFocused = document.activeElement;
   state.cancelArmed = false;
+  state.drawerOpening = true;
   drawerRoot.innerHTML = `
-    <div class="drawer-overlay open">
+    <div class="drawer-overlay">
       <div class="drawer" role="dialog" aria-modal="true" aria-label="Booking details">
         <div class="drawer-head">
           <div><h2>Opening booking…</h2><p>Getting the latest update</p></div>
@@ -2372,29 +2477,27 @@ async function openBooking(id) {
         <div class="load-screen"><span class="spinner" aria-hidden="true"></span> Loading the details...</div>
       </div>
     </div>`;
+  revealLayer(drawerRoot);
   syncBodyLock();
   try {
     const { booking } = await api(`/api/bookings/${encodeURIComponent(id)}`);
     renderDrawer(booking);
     drawerRoot.querySelector('[data-drawer-close]')?.focus();
   } catch (error) {
-    drawerRoot.innerHTML = '';
-    syncBodyLock();
-    toast(error.message);
+    unmountLayer(drawerRoot);
+    toast(error.message, 'error');
   }
 }
 
 function closeDrawer({ restoreFocus = true } = {}) {
-  drawerRoot.innerHTML = '';
   state.activeBooking = null;
   state.cancelArmed = false;
-  syncBodyLock();
+  unmountLayer(drawerRoot);
   if (restoreFocus && state.lastFocused instanceof HTMLElement) state.lastFocused.focus();
 }
 
 function closeModal({ restoreFocus = true } = {}) {
-  modalRoot.innerHTML = '';
-  syncBodyLock();
+  unmountLayer(modalRoot);
   if (restoreFocus && state.lastModalFocus instanceof HTMLElement) state.lastModalFocus.focus();
 }
 
@@ -2490,7 +2593,7 @@ async function cancelBooking(id) {
     renderDrawer(booking, scroll);
     toast('Request cancelled.');
   } catch (error) {
-    toast(error.message);
+    toast(error.message, 'error');
   }
 }
 
@@ -2539,7 +2642,7 @@ document.addEventListener('click', async (event) => {
       renderChrome();
       renderView();
     } catch (error) {
-      toast(error.message);
+      toast(error.message, 'error');
     }
     return;
   }
@@ -2664,7 +2767,7 @@ document.addEventListener('click', async (event) => {
       toast(active ? 'Account activated.' : 'Account deactivated.');
       renderView();
     } catch (error) {
-      toast(error.message);
+      toast(error.message, 'error');
       accountToggle.disabled = false;
     }
     return;
@@ -2675,7 +2778,7 @@ document.addEventListener('click', async (event) => {
     if (accountReset.dataset.armed !== 'true') {
       accountReset.dataset.armed = 'true';
       accountReset.textContent = 'Tap again to reset';
-      toast('Resetting signs them out and clears two-factor. Tap once more.');
+      toast('Resetting signs them out and clears two-factor. Tap once more.', 'warning');
       return;
     }
     accountReset.disabled = true;
@@ -2693,7 +2796,7 @@ document.addEventListener('click', async (event) => {
       );
       showTemporaryPassword(account.name, account.email, result.temporary_password);
     } catch (error) {
-      toast(error.message);
+      toast(error.message, 'error');
       accountReset.disabled = false;
       accountReset.textContent = 'Reset password';
       delete accountReset.dataset.armed;
@@ -2714,7 +2817,7 @@ document.addEventListener('click', async (event) => {
       toast(active ? 'Crew member reactivated.' : 'Crew member deactivated.');
       renderView();
     } catch (error) {
-      toast(error.message);
+      toast(error.message, 'error');
       crewToggle.disabled = false;
     }
     return;
@@ -2735,7 +2838,7 @@ document.addEventListener('click', async (event) => {
       toast(active ? 'Discount activated.' : 'Discount deactivated.');
       renderView();
     } catch (error) {
-      toast(error.message);
+      toast(error.message, 'error');
       discountToggle.disabled = false;
     }
     return;
@@ -2749,7 +2852,7 @@ document.addEventListener('click', async (event) => {
       state.mfaSetup = await api('/api/auth/mfa/setup', { method: 'POST', body: '{}' });
       renderView();
     } catch (error) {
-      toast(error.message);
+      toast(error.message, 'error');
       button.disabled = false;
       button.textContent = 'Set up two-factor';
     }
@@ -2759,19 +2862,21 @@ document.addEventListener('click', async (event) => {
   if (target.closest('[data-assistant-toggle]')) {
     const panel = document.getElementById('assistant-panel');
     if (!panel) return;
-    const open = panel.hidden;
-    panel.hidden = !open;
-    document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', String(open));
-    if (open) {
+    if (panel.hidden) {
+      delete panel.dataset.closing;
+      panel.classList.remove('is-closing');
+      panel.hidden = false;
       renderAssistantLog();
+      requestAnimationFrame(() => panel.classList.add('is-open'));
+      document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', 'true');
       document.getElementById('assistant-input')?.focus();
+    } else {
+      closeAssistant();
     }
     return;
   }
   if (target.closest('[data-assistant-close]')) {
-    const panel = document.getElementById('assistant-panel');
-    if (panel) panel.hidden = true;
-    document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', 'false');
+    closeAssistant();
     return;
   }
 });

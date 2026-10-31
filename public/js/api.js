@@ -1,18 +1,32 @@
-export async function api(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
+let activeRequests = 0;
 
-  const type = response.headers.get('content-type') || '';
-  const data = type.includes('application/json') ? await response.json() : await response.text();
-  if (!response.ok) {
-    const error = new Error((data && data.error) || 'Something went wrong. Please try again.');
-    error.status = response.status;
-    throw error;
+function setRequestBar(busy) {
+  if (busy) document.documentElement.setAttribute('data-busy', '');
+  else document.documentElement.removeAttribute('data-busy');
+}
+
+export async function api(path, options = {}) {
+  activeRequests += 1;
+  setRequestBar(true);
+  try {
+    const response = await fetch(path, {
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      ...options,
+    });
+
+    const type = response.headers.get('content-type') || '';
+    const data = type.includes('application/json') ? await response.json() : await response.text();
+    if (!response.ok) {
+      const error = new Error((data && data.error) || 'Something went wrong. Please try again.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  } finally {
+    activeRequests = Math.max(0, activeRequests - 1);
+    if (!activeRequests) setRequestBar(false);
   }
-  return data;
 }
 
 export function escapeHtml(value) {
@@ -90,7 +104,16 @@ export function monthStartISO() {
   return `${todayISO().slice(0, 7)}-01`;
 }
 
-export function toast(message) {
+const TOAST_ICONS = {
+  success: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>',
+  error:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>',
+  warning:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>',
+  info: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+};
+
+function toastNode() {
   let node = document.getElementById('toast');
   if (!node) {
     node = document.createElement('div');
@@ -100,10 +123,38 @@ export function toast(message) {
     node.setAttribute('aria-live', 'polite');
     document.body.appendChild(node);
   }
-  node.textContent = message;
+  if (!node.querySelector('.toast-msg')) {
+    node.innerHTML =
+      '<span class="toast-icon" aria-hidden="true"></span>' +
+      '<span class="toast-msg"></span>' +
+      '<button class="toast-close" type="button" aria-label="Dismiss notification">×</button>' +
+      '<span class="toast-bar" aria-hidden="true"></span>';
+    node.querySelector('.toast-close')?.addEventListener('click', hideToast);
+  }
+  return node;
+}
+
+function hideToast() {
+  const node = document.getElementById('toast');
+  if (!node) return;
+  clearTimeout(node._timer);
+  node.classList.remove('show');
+}
+
+export function toast(message, type = 'success') {
+  const node = toastNode();
+  const tint = TOAST_ICONS[type] ? type : 'info';
+  node.classList.remove('show', 'toast--success', 'toast--error', 'toast--warning', 'toast--info');
+  node.classList.add(`toast--${tint}`);
+  const icon = node.querySelector('.toast-icon');
+  if (icon) icon.innerHTML = TOAST_ICONS[tint];
+  const copy = node.querySelector('.toast-msg');
+  if (copy) copy.textContent = message;
+  // Restart the entrance and the progress bar for back-to-back messages.
+  void node.offsetWidth;
   node.classList.add('show');
   clearTimeout(node._timer);
-  node._timer = setTimeout(() => node.classList.remove('show'), 3200);
+  node._timer = setTimeout(hideToast, 3600);
 }
 
 export function debounce(fn, wait = 220) {
