@@ -18,7 +18,15 @@ function createLocalStore() {
       throw new Error(`Could not read ${file}. Fix or remove the file before starting.`);
     }
   } else {
-    data = { users: [], services: [], bookings: [], booking_updates: [] };
+    data = {
+      users: [],
+      services: [],
+      bookings: [],
+      booking_updates: [],
+      branches: [],
+      notifications: [],
+      discounts: [],
+    };
   }
 
   const save = () => {
@@ -69,6 +77,9 @@ const TABLES = {
   services: 'pm_services',
   bookings: 'pm_bookings',
   booking_updates: 'pm_booking_updates',
+  branches: 'pm_branches',
+  notifications: 'pm_notifications',
+  discounts: 'pm_discounts',
 };
 
 function createSupabaseStore() {
@@ -124,10 +135,16 @@ async function seedIfNeeded(store) {
     await store.insertMany('services', seed.services);
   }
 
+  const existingBranches = await store.list('branches');
+  if (existingBranches.length === 0) {
+    await store.insertMany('branches', seed.branches);
+  }
+
   if (SEED_DEMO && existingUsers.length === 0) {
     await store.insertMany('users', seed.users);
     await store.insertMany('bookings', seed.bookings);
     await store.insertMany('booking_updates', seed.booking_updates);
+    await store.insertMany('discounts', seed.discounts);
   }
 }
 

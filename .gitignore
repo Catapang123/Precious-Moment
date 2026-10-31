@@ -2,6 +2,8 @@ node_modules/
 .env
 data/
 reports/
+.bin/
+.cloud-attachments/
 __pycache__/
 *.pyc
 *.log

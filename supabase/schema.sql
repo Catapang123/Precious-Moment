@@ -8,13 +8,30 @@
 
 create extension if not exists "pgcrypto";
 
+create table if not exists public.pm_branches (
+  id text primary key,
+  name text not null,
+  address text not null default '',
+  lat double precision not null,
+  lng double precision not null,
+  map_url text not null default '',
+  phone text not null default '',
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.pm_users (
   id text primary key,
   name text not null check (char_length(name) between 2 and 80),
   email text not null unique,
   password_hash text not null,
-  role text not null default 'customer' check (role in ('customer', 'staff', 'admin')),
+  role text not null default 'customer' check (role in ('customer', 'staff', 'branch_admin', 'admin')),
+  branch_id text references public.pm_branches(id),
   phone text not null default '',
+  active boolean not null default true,
+  mfa_enabled boolean not null default false,
+  mfa_secret text,
+  mfa_pending_secret text,
+  must_change_password boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -39,18 +56,41 @@ create table if not exists public.pm_bookings (
   ref text not null unique,
   customer_id text not null references public.pm_users(id),
   staff_id text references public.pm_users(id),
+  branch_id text references public.pm_branches(id),
+  needs_review boolean not null default false,
+  booking_type text not null default 'event' check (booking_type in ('event', 'pickup')),
+  duration_hours numeric(4, 1) not null default 3 check (duration_hours >= 0 and duration_hours <= 24),
+  pickup_date date,
+  pickup_time text not null default '',
   event_date date not null,
   event_time text not null default '',
   venue text not null,
+  address text not null default '',
   notes text not null default '',
   status text not null default 'pending' check (status in ('pending', 'confirmed', 'in_progress', 'ready', 'completed', 'cancelled')),
   payment_status text not null default 'unpaid' check (payment_status in ('unpaid', 'deposit_paid', 'paid', 'refunded')),
   payment_method text not null default '',
   payment_ref text not null default '',
   amount_paid numeric(12, 2) not null default 0 check (amount_paid >= 0),
+  subtotal numeric(12, 2) not null default 0 check (subtotal >= 0),
+  discount_id text,
+  discount_label text not null default '',
+  discount_amount numeric(12, 2) not null default 0 check (discount_amount >= 0),
   total numeric(12, 2) not null check (total >= 0),
   paid_at timestamptz,
   items jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.pm_discounts (
+  id text primary key,
+  customer_id text not null references public.pm_users(id) on delete cascade,
+  type text not null check (type in ('percent', 'fixed')),
+  value numeric(12, 2) not null check (value > 0),
+  note text not null default '',
+  active boolean not null default true,
+  created_by text references public.pm_users(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -64,16 +104,55 @@ create table if not exists public.pm_booking_updates (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.pm_notifications (
+  id text primary key,
+  user_id text not null references public.pm_users(id) on delete cascade,
+  branch_id text references public.pm_branches(id),
+  booking_id text references public.pm_bookings(id) on delete cascade,
+  title text not null,
+  message text not null default '',
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists pm_users_branch_idx on public.pm_users (branch_id);
+create index if not exists pm_bookings_branch_idx on public.pm_bookings (branch_id);
+create index if not exists pm_notifications_user_idx on public.pm_notifications (user_id, created_at desc);
 create index if not exists pm_bookings_customer_idx on public.pm_bookings (customer_id);
 create index if not exists pm_bookings_staff_idx on public.pm_bookings (staff_id);
 create index if not exists pm_bookings_event_date_idx on public.pm_bookings (event_date);
 create index if not exists pm_bookings_status_idx on public.pm_bookings (status);
+create index if not exists pm_bookings_type_idx on public.pm_bookings (booking_type);
+create index if not exists pm_discounts_customer_idx on public.pm_discounts (customer_id) where active;
 create index if not exists pm_booking_updates_booking_idx on public.pm_booking_updates (booking_id, created_at);
 
+-- The two studio branches. Bookings are routed to the nearest one.
+insert into public.pm_branches (id, name, address, lat, lng, map_url) values
+  (
+    'branch-batangas',
+    'Batangas City branch',
+    'P. Burgos Street, Barangay 12, Pallocan Kanluran, Batangas City, Batangas 4200',
+    13.7606916,
+    121.0573095,
+    'https://maps.app.goo.gl/Qiz5kipeCsmVfEbs6'
+  ),
+  (
+    'branch-bauan',
+    'Bauan branch',
+    'Poblacion 4, New Danglayan, Bauan, Batangas 4201',
+    13.7923305,
+    121.0103575,
+    'https://maps.app.goo.gl/85qpuunn9K74po7w5'
+  )
+  on conflict (id) do nothing;
+
+alter table public.pm_branches enable row level security;
 alter table public.pm_users enable row level security;
 alter table public.pm_services enable row level security;
 alter table public.pm_bookings enable row level security;
 alter table public.pm_booking_updates enable row level security;
+alter table public.pm_notifications enable row level security;
+alter table public.pm_discounts enable row level security;
 
 -- Deliberately no anon/authenticated policies: the public API is the only
 -- client. The Node server connects with the service-role key, which bypasses

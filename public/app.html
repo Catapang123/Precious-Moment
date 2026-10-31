@@ -34,7 +34,7 @@
       <p class="sidebar-role" data-role-label>Studio</p>
       <nav class="sidebar-nav" data-sidebar-nav aria-label="Dashboard"></nav>
       <div class="sidebar-bottom">
-        <a class="sidebar-link" href="/">
+        <a class="sidebar-link" href="/welcome">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 13v6H5V6h6" /></svg>
           View the public site
         </a>
@@ -63,6 +63,26 @@
         <div class="load-screen"><span class="spinner" aria-hidden="true"></span> Opening your dashboard...</div>
       </main>
     </div>
+
+    <button class="assistant-toggle" type="button" data-assistant-toggle aria-expanded="false" aria-controls="assistant-panel">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4z" /><path d="M8 9h8M8 12h5" /></svg>
+      Ask the studio
+    </button>
+    <aside class="assistant-panel" id="assistant-panel" hidden aria-label="Studio assistant">
+      <header class="assistant-head">
+        <div><strong>Studio assistant</strong><span>Answers only from this system</span></div>
+        <button class="icon-button" type="button" data-assistant-close aria-label="Close assistant">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <div class="assistant-log" data-assistant-log aria-live="polite"></div>
+      <form class="assistant-form" id="assistant-form">
+        <label class="sr-only" for="assistant-input">Your question</label>
+        <input class="input" id="assistant-input" name="message" maxlength="500" placeholder="Ask about prices, pickup, or your booking" autocomplete="off" />
+        <button class="btn btn-primary" type="submit">Send</button>
+      </form>
+      <p class="assistant-foot">Only studio information is answered. Anything else returns “Out of scope. Please ask another question.”</p>
+    </aside>
 
     <div id="drawer-root"></div>
     <div id="modal-root"></div>

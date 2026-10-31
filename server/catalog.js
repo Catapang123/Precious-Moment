@@ -307,6 +307,7 @@ export function priceLine(service, input) {
     return {
       service_id: service.id,
       name: service.name,
+      category: service.category,
       pricing_mode: 'area',
       unit: service.unit,
       unit_price: service.price,
@@ -327,6 +328,7 @@ export function priceLine(service, input) {
   return {
     service_id: service.id,
     name: service.name,
+    category: service.category,
     pricing_mode: 'fixed',
     unit: service.unit,
     unit_price: service.price,

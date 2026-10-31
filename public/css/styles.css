@@ -38,6 +38,10 @@
   --container: 1180px;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 *,
 *::before,
 *::after {
@@ -1642,6 +1646,11 @@ h2 em {
   color: var(--warning);
 }
 
+.status-review {
+  background: var(--blush-3);
+  color: var(--rose-deep);
+}
+
 .status-deposit_paid {
   background: var(--blush-3);
   color: var(--rose-deep);
@@ -2254,6 +2263,46 @@ h2 em {
   font-size: 0.63rem;
   color: var(--ink-faint);
   line-height: 1.6;
+}
+
+.link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--rose-deep);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--rose);
+}
+
+.password-rules {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 0.66rem;
+  color: var(--ink-faint);
+}
+
+.password-rules li::before {
+  content: '○';
+  margin-right: 6px;
+  font-size: 0.6rem;
+}
+
+.password-rules li.ok {
+  color: var(--success);
+}
+
+.password-rules li.ok::before {
+  content: '✓';
 }
 
 /* =========================================================
@@ -5430,5 +5479,270 @@ button.booking-row:hover {
     flex-wrap: wrap;
     width: 100%;
     justify-content: center;
+  }
+}
+
+/* ---------- Booking type, availability, accounts, assistant ---------- */
+
+.booking-type-switch {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.booking-type-switch .chip {
+  flex: 1;
+}
+
+.booking-type-note {
+  font-size: 0.7rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  background: var(--blush-2);
+  border-radius: 9px;
+  padding: 9px 11px;
+  margin: 2px 0 10px;
+}
+
+.availability-note {
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--success);
+  background: var(--success-bg);
+  border: 1px solid #c7e4d3;
+  border-radius: 9px;
+  padding: 9px 11px;
+  margin: 10px 0;
+}
+
+.availability-note.full {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: #efc5cd;
+}
+
+.cart-total-row.discount span:last-child {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.account-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.account-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.account-row:last-child {
+  border-bottom: 0;
+}
+
+.account-who {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.account-who strong {
+  display: block;
+  font-size: 0.82rem;
+}
+
+.account-who span {
+  display: block;
+  font-size: 0.66rem;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.account-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.form-title {
+  font-size: 0.92rem;
+  margin-bottom: 12px;
+}
+
+.mfa-secret {
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  background: var(--paper-2);
+}
+
+.mfa-secret > span {
+  display: block;
+  font-size: 0.62rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+
+.mfa-secret code {
+  font-size: 0.95rem;
+  letter-spacing: 0.12em;
+  overflow-wrap: anywhere;
+}
+
+.assistant-toggle {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--sans);
+  font-size: 0.74rem;
+  font-weight: 700;
+  box-shadow: 0 14px 34px rgba(53, 27, 39, 0.25);
+  cursor: pointer;
+}
+
+.assistant-toggle svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.assistant-panel {
+  position: fixed;
+  right: 22px;
+  bottom: 78px;
+  z-index: 90;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.assistant-panel[hidden] {
+  display: none;
+}
+
+.assistant-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--blush-2);
+}
+
+.assistant-head strong {
+  display: block;
+  font-size: 0.86rem;
+}
+
+.assistant-head span {
+  display: block;
+  font-size: 0.63rem;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+.assistant-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 120px;
+}
+
+.assistant-hint {
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+.assistant-msg {
+  max-width: 88%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-size: 0.74rem;
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.assistant-msg.user {
+  align-self: flex-end;
+  background: var(--rose);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.assistant-msg.studio {
+  align-self: flex-start;
+  background: var(--blush-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+
+.assistant-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.assistant-form .input {
+  min-width: 0;
+}
+
+.assistant-foot {
+  padding: 0 14px 12px;
+  font-size: 0.6rem;
+  color: var(--ink-faint);
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .assistant-panel {
+    right: 12px;
+    left: 12px;
+    width: auto;
+    bottom: 74px;
+  }
+
+  .assistant-toggle {
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .account-row {
+    padding: 12px 14px;
   }
 }

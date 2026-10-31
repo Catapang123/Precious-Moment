@@ -64,17 +64,30 @@ const NAV = {
     { key: 'overview', label: 'Overview', icon: 'home' },
     { key: 'book', label: 'New booking', icon: 'plus' },
     { key: 'bookings', label: 'My bookings', icon: 'calendar' },
+    { key: 'account', label: 'Account & security', icon: 'staff' },
   ],
   staff: [
     { key: 'overview', label: 'Studio day', icon: 'home' },
     { key: 'schedule', label: 'My schedule', icon: 'schedule' },
+    { key: 'account', label: 'Account & security', icon: 'staff' },
   ],
   admin: [
     { key: 'overview', label: 'Overview', icon: 'home' },
     { key: 'bookings', label: 'Bookings', icon: 'bookings' },
     { key: 'payments', label: 'Payments', icon: 'payments' },
+    { key: 'discounts', label: 'Discounts', icon: 'spark' },
     { key: 'reports', label: 'Reports', icon: 'reports' },
     { key: 'team', label: 'Team', icon: 'staff' },
+    { key: 'alerts', label: 'Alerts', icon: 'mail' },
+    { key: 'account', label: 'Account & security', icon: 'check' },
+  ],
+  branch_admin: [
+    { key: 'overview', label: 'Overview', icon: 'home' },
+    { key: 'bookings', label: 'Bookings', icon: 'bookings' },
+    { key: 'payments', label: 'Payments', icon: 'payments' },
+    { key: 'team', label: 'Team', icon: 'staff' },
+    { key: 'alerts', label: 'Alerts', icon: 'mail' },
+    { key: 'account', label: 'Account & security', icon: 'check' },
   ],
 };
 
@@ -83,17 +96,30 @@ const PAGE_META = {
     overview: { title: 'Your moments', subtitle: 'Bookings, payments, and studio updates in one place.' },
     book: { title: 'New booking', subtitle: 'Choose the pieces, send the date, and we take it from there.' },
     bookings: { title: 'My bookings', subtitle: 'Every request and every update, kept together.' },
+    account: { title: 'Account & security', subtitle: 'Your sign-in, password, and two-factor settings.' },
   },
   staff: {
     overview: { title: 'Studio day', subtitle: 'Your assigned events and what needs a nudge.' },
     schedule: { title: 'My schedule', subtitle: 'Dates, crews, and the progress of each booking.' },
+    account: { title: 'Account & security', subtitle: 'Your sign-in, password, and two-factor settings.' },
   },
   admin: {
     overview: { title: 'Studio overview', subtitle: 'The whole day, from requests to recorded payments.' },
     bookings: { title: 'Bookings', subtitle: 'Coordinate dates, crews, and service progress.' },
     payments: { title: 'Payments', subtitle: 'Keep a clear record of deposits and balances.' },
+    discounts: { title: 'Discounts', subtitle: 'Assign a loyalty or courtesy discount to a customer.' },
     reports: { title: 'Reports', subtitle: 'The numbers behind the moments.' },
-    team: { title: 'Team', subtitle: 'Create the crew accounts that can see assigned work.' },
+    team: { title: 'Team', subtitle: 'Studio accounts and the crew records available for assignment.' },
+    alerts: { title: 'Alerts', subtitle: 'New bookings routed to a branch land here.' },
+    account: { title: 'Account & security', subtitle: 'Password and two-factor protection for your sign-in.' },
+  },
+  branch_admin: {
+    overview: { title: 'Branch overview', subtitle: 'Your branch, from requests to recorded payments.' },
+    bookings: { title: 'Branch bookings', subtitle: 'Only the bookings routed to your branch.' },
+    payments: { title: 'Branch payments', subtitle: 'Deposits and balances for your branch.' },
+    team: { title: 'Branch team', subtitle: 'Crew records available for this branch; they do not sign in.' },
+    alerts: { title: 'Alerts', subtitle: 'New bookings that were routed to your branch.' },
+    account: { title: 'Account & security', subtitle: 'Password and two-factor protection for your sign-in.' },
   },
 };
 
@@ -103,6 +129,9 @@ const state = {
   services: [],
   categories: [],
   staff: [],
+  branches: [],
+  notifications: [],
+  unread: 0,
   view: 'overview',
   activeBooking: null,
   cart: [],
@@ -117,6 +146,15 @@ const state = {
   reportTo: todayISO(),
   reportLoading: false,
   reportError: '',
+  bookingType: 'event',
+  pickupBranchId: '',
+  branchTouched: false,
+  customerDiscount: null,
+  availability: null,
+  accounts: [],
+  discounts: [],
+  chat: [],
+  mfaSetup: null,
   lastFocused: null,
   lastModalFocus: null,
   cancelArmed: false,
@@ -151,6 +189,15 @@ function plural(count, one, many = `${one}s`) {
 
 function firstName(name) {
   return String(name || '').trim().split(/\s+/)[0] || 'there';
+}
+
+function isAdminRole(role = state.user?.role) {
+  return role === 'admin' || role === 'branch_admin';
+}
+
+function branchName(id) {
+  const branch = state.branches.find((item) => item.id === id);
+  return branch ? branch.name : 'Unassigned';
 }
 
 function greeting() {
@@ -236,9 +283,13 @@ function nowLabel() {
 
 function bookingRow(booking, { showCustomer = true } = {}) {
   const { day, month } = dateParts(booking.event_date);
+  const where =
+    booking.booking_type === 'pickup'
+      ? `Pickup at ${booking.branch?.name || 'the studio'}`
+      : booking.venue;
   const subline = showCustomer && booking.customer
-    ? `${booking.customer.name} · ${formatTime(booking.event_time) || 'Time to confirm'} · ${booking.venue}`
-    : `${formatTime(booking.event_time) || 'Time to confirm'} · ${booking.venue}`;
+    ? `${booking.customer.name} · ${formatTime(booking.event_time) || 'Time to confirm'} · ${where}`
+    : `${formatTime(booking.event_time) || 'Time to confirm'} · ${where}`;
   return `
     <button class="booking-row" type="button" data-open-booking="${esc(booking.id)}">
       <span class="booking-date-tile"><strong>${day}</strong><span>${month}</span></span>
@@ -267,13 +318,14 @@ function emptyState({ icon = 'calendar', title, text, action = '' }) {
 /* ---------- Chrome ---------- */
 
 function navBadge(key) {
-  if (state.user.role === 'admin') {
+  if (isAdminRole()) {
     if (key === 'bookings') return state.bookings.filter((booking) => booking.status === 'pending').length;
     if (key === 'payments') {
       return state.bookings.filter(
         (booking) => booking.payment_status === 'unpaid' && ACTIVE_STATUSES.includes(booking.status)
       ).length;
     }
+    if (key === 'alerts') return state.unread;
   }
   if (state.user.role === 'staff' && key === 'schedule') {
     return state.bookings.filter((booking) => ACTIVE_STATUSES.includes(booking.status)).length;
@@ -298,13 +350,19 @@ function renderChrome() {
     .join('');
 
   document.querySelector('[data-role-label]').textContent =
-    role === 'admin' ? 'Studio administration' : role === 'staff' ? 'Studio crew' : 'Customer account';
+    role === 'admin'
+      ? 'Studio administration'
+      : role === 'branch_admin'
+        ? `${branchName(state.user.branch_id)} administration`
+        : role === 'staff'
+          ? 'Studio crew'
+          : 'Customer account';
 
   userChip.innerHTML = `
     <span class="avatar">${esc(initials(state.user.name))}</span>
     <span class="user-chip-copy">
       <strong>${esc(state.user.name)}</strong>
-      <span>${esc(state.user.role)}</span>
+      <span>${esc(role === 'branch_admin' ? branchName(state.user.branch_id) : state.user.role)}</span>
     </span>
     <button class="icon-button" type="button" data-logout aria-label="Sign out" title="Sign out">${ICONS.logout}</button>`;
 
@@ -359,15 +417,20 @@ function renderView() {
   if (role === 'customer') {
     if (state.view === 'book') renderBookView();
     else if (state.view === 'bookings') renderCustomerBookings();
+    else if (state.view === 'account') renderAccount();
     else renderCustomerOverview();
   } else if (role === 'staff') {
     if (state.view === 'schedule') renderStaffSchedule();
+    else if (state.view === 'account') renderAccount();
     else renderStaffOverview();
-  } else if (role === 'admin') {
+  } else if (isAdminRole(role)) {
     if (state.view === 'bookings') renderAdminBookings();
     else if (state.view === 'payments') renderAdminPayments();
+    else if (state.view === 'discounts') renderAdminDiscounts();
     else if (state.view === 'reports') renderReports();
     else if (state.view === 'team') renderAdminTeam();
+    else if (state.view === 'alerts') renderAlerts();
+    else if (state.view === 'account') renderAccount();
     else renderAdminOverview();
   }
 }
@@ -690,7 +753,11 @@ function renderAdminOverview() {
       <div><h2>${greeting()}, ${esc(firstName(state.user.name))}.</h2><p>Here is where the studio stands today.</p></div>
       <div class="page-actions">
         <button class="btn" type="button" data-nav="bookings">All bookings</button>
-        <button class="btn btn-primary" type="button" data-nav="reports">${ICONS.reports} Generate report</button>
+        ${
+          state.user.role === 'admin'
+            ? `<button class="btn btn-primary" type="button" data-nav="reports">${ICONS.reports} Generate report</button>`
+            : `<button class="btn btn-primary" type="button" data-nav="alerts">${ICONS.mail} Alerts${state.unread ? ` · ${state.unread}` : ''}</button>`
+        }
       </div>
     </div>
 
@@ -765,9 +832,13 @@ function renderAdminOverview() {
             <button class="quick-action" type="button" data-nav="payments">
               ${ICONS.payments}<span><strong>Record a payment</strong><span>Deposits and balances</span></span>
             </button>
-            <button class="quick-action" type="button" data-nav="reports">
-              ${ICONS.reports}<span><strong>Generate a report</strong><span>Revenue and workload</span></span>
-            </button>
+            ${
+              state.user.role === 'admin'
+                ? `<button class="quick-action" type="button" data-nav="reports">
+                    ${ICONS.reports}<span><strong>Generate a report</strong><span>Revenue and workload</span></span>
+                  </button>`
+                : ''
+            }
             <a class="quick-action" href="/#prices">
               ${ICONS.bookings}<span><strong>View public rates</strong><span>What customers see</span></span>
             </a>
@@ -795,10 +866,10 @@ function renderBookView() {
   const categories = state.categories || [];
   viewRoot.innerHTML = `
     <div class="page-intro">
-      <div><h2>Build your booking</h2><p>Choose everything for the day. The studio confirms availability before the date is locked.</p></div>
+      <div><h2>Build your booking</h2><p>Choose what you need, then tell us whether it is an event or a pickup.</p></div>
       <div class="page-actions">
         <button class="btn btn-danger" type="button" data-cart-clear ${state.cart.length ? '' : 'hidden'}>Clear selection</button>
-        <a class="btn" href="/#prices">View full rate card</a>
+        <a class="btn" href="/welcome#prices">View full rate card</a>
       </div>
     </div>
     <div class="book-grid">
@@ -822,28 +893,175 @@ function renderBookView() {
         <div class="cart-items" id="cart-lines">${cartLinesTemplate()}</div>
         <div class="cart-totals" id="cart-totals">${cartTotalsTemplate()}</div>
         <form class="cart-form" id="booking-form" novalidate>
-          <div class="field">
-            <label for="booking-date">Event date</label>
-            <input class="input" type="date" id="booking-date" name="event_date" min="${todayISO()}" required />
+          <div class="booking-type-switch" role="group" aria-label="Booking type">
+            <button class="chip ${state.bookingType === 'event' ? 'active' : ''}" type="button" data-booking-type="event">Event booking</button>
+            <button class="chip ${state.bookingType === 'pickup' ? 'active' : ''}" type="button" data-booking-type="pickup">Pickup booking</button>
           </div>
-          <div class="field">
-            <label for="booking-time">Start time <span class="field-hint">optional</span></label>
-            <input class="input" type="time" id="booking-time" name="event_time" />
-          </div>
-          <div class="field">
-            <label for="booking-venue">Venue or pickup details</label>
-            <input class="input" type="text" id="booking-venue" name="venue" maxlength="160" placeholder="e.g. Casa Esperanza, function hall" required />
-          </div>
+          <div id="booking-fields">${bookingFieldsTemplate()}</div>
           <div class="field">
             <label for="booking-notes">Notes <span class="field-hint">optional</span></label>
             <textarea class="textarea" id="booking-notes" name="notes" maxlength="2000" placeholder="Theme, sizes, call time, or anything we should know."></textarea>
           </div>
+          <p class="availability-note" id="availability-note" hidden></p>
           <div class="form-error" id="booking-error" role="alert"></div>
           <button class="btn btn-primary button-block" type="submit" ${state.cart.length ? '' : 'disabled'}>Send booking request</button>
           <p class="cart-note">No payment is taken here. We check the calendar first and send the 50% reservation details after you request a date.</p>
         </form>
       </aside>
     </div>`;
+  renderAvailabilityNote();
+  if (state.bookingType === 'pickup') suggestPickupBranch();
+}
+
+function bookingFieldsTemplate() {
+  if (state.bookingType === 'pickup') {
+    return `
+      <div class="field">
+        <label for="pickup-branch">Pickup branch</label>
+        <select class="select" id="pickup-branch" name="branch_id" required>
+          <option value="">Choose a branch</option>
+          ${state.branches
+            .map(
+              (branch) =>
+                `<option value="${esc(branch.id)}" ${state.pickupBranchId === branch.id ? 'selected' : ''}>${esc(branch.name)}</option>`
+            )
+            .join('')}
+        </select>
+        <span class="field-hint" id="geo-note">${esc(state.geoNote || 'Choose either branch — your choice is kept even if we suggest another one.')}</span>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="pickup-date">Pickup date</label>
+          <input class="input" type="date" id="pickup-date" name="pickup_date" min="${todayISO()}" required />
+        </div>
+        <div class="field">
+          <label for="pickup-time">Pickup time <span class="field-hint">optional</span></label>
+          <input class="input" type="time" id="pickup-time" name="pickup_time" />
+        </div>
+      </div>
+      <p class="booking-type-note">Pickup orders are normally ready in <strong>1–2 days</strong>. No event address or duration is needed.</p>`;
+  }
+
+  return `
+    <div class="field-row">
+      <div class="field">
+        <label for="booking-date">Event date</label>
+        <input class="input" type="date" id="booking-date" name="event_date" min="${todayISO()}" required />
+      </div>
+      <div class="field">
+        <label for="booking-time">Start time</label>
+        <input class="input" type="time" id="booking-time" name="event_time" required />
+      </div>
+    </div>
+    <div class="field">
+      <label for="booking-duration">Duration</label>
+      <select class="select" id="booking-duration" name="duration_hours">
+        ${[2, 3, 4, 5, 6, 8, 10, 12]
+          .map((hours) => `<option value="${hours}" ${hours === 3 ? 'selected' : ''}>${hours} hours</option>`)
+          .join('')}
+      </select>
+    </div>
+    <div class="field">
+      <label for="booking-venue">Event venue</label>
+      <input class="input" type="text" id="booking-venue" name="venue" maxlength="160" placeholder="e.g. Casa Esperanza, function hall" required />
+    </div>
+    <div class="field">
+      <label for="booking-address">Service address</label>
+      <input class="input" type="text" id="booking-address" name="address" maxlength="240" placeholder="House or venue, street, barangay, city" required />
+      <span class="field-hint">We match this to the nearest branch unless you choose one below.</span>
+    </div>
+    <div class="field">
+      <label for="booking-branch">Assigned branch <span class="field-hint">optional</span></label>
+      <select class="select" id="booking-branch" name="branch_id">
+        <option value="">Nearest to the address</option>
+        ${state.branches.map((branch) => `<option value="${esc(branch.id)}">${esc(branch.name)}</option>`).join('')}
+      </select>
+    </div>`;
+}
+
+function branchesWithDistance(lat, lng) {
+  const toRad = (value) => (Number(value) * Math.PI) / 180;
+  return state.branches
+    .filter((branch) => Number.isFinite(Number(branch.lat)) && Number.isFinite(Number(branch.lng)))
+    .map((branch) => {
+      const dLat = toRad(Number(branch.lat) - lat);
+      const dLng = toRad(Number(branch.lng) - lng);
+      const h =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat)) * Math.cos(toRad(Number(branch.lat))) * Math.sin(dLng / 2) ** 2;
+      return { branch, km: 2 * 6371 * Math.asin(Math.sqrt(h)) };
+    })
+    .sort((a, b) => a.km - b.km);
+}
+
+function suggestPickupBranch() {
+  if (state.branchTouched || state.pickupBranchId) return;
+  if (!navigator.geolocation || !state.branches.length) return;
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      if (state.branchTouched || state.pickupBranchId || state.bookingType !== 'pickup') return;
+      const [nearest] = branchesWithDistance(position.coords.latitude, position.coords.longitude);
+      if (!nearest) return;
+      state.pickupBranchId = nearest.branch.id;
+      state.geoNote = `Suggested from your location: ${nearest.branch.name} (${Math.round(nearest.km)} km away). You can switch branches — your choice wins.`;
+      const select = document.getElementById('pickup-branch');
+      if (select) select.value = nearest.branch.id;
+      const note = document.getElementById('geo-note');
+      if (note) note.textContent = state.geoNote;
+    },
+    () => {
+      // Permission denied or unavailable: the manual picker is already there.
+    },
+    { timeout: 6000, maximumAge: 300000 }
+  );
+}
+
+async function checkAvailability() {
+  if (state.bookingType !== 'event') {
+    state.availability = null;
+    renderAvailabilityNote();
+    return;
+  }
+  const date = document.getElementById('booking-date')?.value;
+  const time = document.getElementById('booking-time')?.value;
+  const hours = Number(document.getElementById('booking-duration')?.value) || 3;
+  const branchId = document.getElementById('booking-branch')?.value || '';
+  const services = state.cart
+    .filter((item) => item.category === 'Photo & booth')
+    .map((item) => item.service_id)
+    .join(',');
+  if (!date || !time || !branchId || !services) {
+    state.availability = null;
+    renderAvailabilityNote();
+    return;
+  }
+  try {
+    const query = new URLSearchParams({ date, branch_id: branchId, time, hours: String(hours), services });
+    const { availability } = await api(`/api/availability?${query.toString()}`);
+    state.availability = availability;
+  } catch {
+    state.availability = null;
+  }
+  renderAvailabilityNote();
+}
+
+function renderAvailabilityNote() {
+  const note = document.getElementById('availability-note');
+  if (!note) return;
+  const availability = state.availability;
+  if (state.bookingType !== 'event' || !availability) {
+    note.hidden = true;
+    note.textContent = '';
+    note.classList.remove('full');
+    return;
+  }
+  note.hidden = false;
+  note.classList.toggle('full', availability.full);
+  note.textContent = availability.full
+    ? `That window is full: ${availability.used} of ${availability.capacity} simultaneous services are booked.${
+        availability.next_label ? ` The next open start is ${availability.next_label}.` : ''
+      }`
+    : `${availability.remaining} of ${availability.capacity} simultaneous service slots are still open for that window.`;
 }
 
 function catalogBodyTemplate() {
@@ -927,11 +1145,25 @@ function cartLinesTemplate() {
     .join('');
 }
 
+function discountPreview(subtotal, discount = state.customerDiscount) {
+  if (!discount) return 0;
+  const value = Number(discount.value) || 0;
+  const amount = discount.type === 'percent' ? Math.floor((subtotal * value) / 100) : Math.round(value);
+  return Math.max(0, Math.min(subtotal, amount));
+}
+
 function cartTotalsTemplate() {
-  const total = cartSubtotal();
+  const subtotal = cartSubtotal();
+  const discountAmount = discountPreview(subtotal);
+  const total = subtotal - discountAmount;
   const deposit = Math.ceil(total / 2);
   return `
-    <div class="cart-total-row"><span>Subtotal</span><span>${peso(total)}</span></div>
+    <div class="cart-total-row"><span>Subtotal</span><span>${peso(subtotal)}</span></div>
+    ${
+      discountAmount
+        ? `<div class="cart-total-row discount"><span>${esc(state.customerDiscount.label)}</span><span>−${peso(discountAmount)}</span></div>`
+        : ''
+    }
     <div class="cart-total-row"><span>Reservation fee (50%)</span><span class="deposit">${peso(deposit)}</span></div>
     <div class="cart-total-row"><span>Balance after reservation</span><span>${peso(total - deposit)}</span></div>
     <div class="cart-total-row grand"><span>Estimated total</span><strong>${peso(total)}</strong></div>`;
@@ -949,6 +1181,7 @@ function syncCart() {
   if (submit) submit.disabled = state.cart.length === 0;
   const clear = document.querySelector('[data-cart-clear]');
   if (clear) clear.hidden = state.cart.length === 0;
+  if (document.getElementById('booking-form')) checkAvailability();
 }
 
 function addService(id) {
@@ -993,11 +1226,44 @@ async function submitBooking(form) {
   setError('');
   if (!state.cart.length) return setError('Add at least one piece before sending your request.');
   const data = new FormData(form);
-  const eventDate = String(data.get('event_date') || '');
-  const venue = String(data.get('venue') || '').trim();
-  if (!eventDate) return setError('Choose your event date.');
-  if (eventDate < todayISO()) return setError('The event date cannot be in the past.');
-  if (venue.length < 3) return setError('Add the venue or a pickup note.');
+  const type = state.bookingType;
+  const payload = {
+    booking_type: type,
+    notes: String(data.get('notes') || '').trim(),
+    items: state.cart.map((item) => ({
+      service_id: item.service_id,
+      qty: item.qty,
+      width_ft: item.width_ft,
+      height_ft: item.height_ft,
+    })),
+  };
+
+  if (type === 'pickup') {
+    const branchId = String(data.get('branch_id') || '');
+    const pickupDate = String(data.get('pickup_date') || '');
+    if (!branchId) return setError('Choose the branch where you will pick up.');
+    if (!pickupDate) return setError('Choose your pickup date.');
+    if (pickupDate < todayISO()) return setError('The pickup date cannot be in the past.');
+    payload.branch_id = branchId;
+    payload.pickup_date = pickupDate;
+    payload.pickup_time = String(data.get('pickup_time') || '');
+  } else {
+    const eventDate = String(data.get('event_date') || '');
+    const eventTime = String(data.get('event_time') || '');
+    const venue = String(data.get('venue') || '').trim();
+    const address = String(data.get('address') || '').trim();
+    if (!eventDate) return setError('Choose your event date.');
+    if (eventDate < todayISO()) return setError('The event date cannot be in the past.');
+    if (!eventTime) return setError('Choose the event start time.');
+    if (venue.length < 3) return setError('Add the event venue.');
+    if (address.length < 8) return setError('Add the full service address, including the barangay and city.');
+    payload.event_date = eventDate;
+    payload.event_time = eventTime;
+    payload.duration_hours = Number(data.get('duration_hours')) || 3;
+    payload.venue = venue;
+    payload.address = address;
+    payload.branch_id = String(data.get('branch_id') || '');
+  }
 
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
@@ -1006,21 +1272,11 @@ async function submitBooking(form) {
   try {
     const { booking } = await api('/api/bookings', {
       method: 'POST',
-      body: JSON.stringify({
-        event_date: eventDate,
-        event_time: String(data.get('event_time') || ''),
-        venue,
-        notes: String(data.get('notes') || '').trim(),
-        items: state.cart.map((item) => ({
-          service_id: item.service_id,
-          qty: item.qty,
-          width_ft: item.width_ft,
-          height_ft: item.height_ft,
-        })),
-      }),
+      body: JSON.stringify(payload),
     });
     state.bookings.unshift(booking);
     state.cart = [];
+    state.availability = null;
     renderChrome();
     renderView();
     showBookingSuccess(booking);
@@ -1040,6 +1296,18 @@ function showBookingSuccess(booking) {
         <h2 id="success-title">Request received.</h2>
         <p>The studio will check the calendar and get back to you with availability and the reservation details.</p>
         <div class="modal-ref">${esc(booking.ref)} · ${peso(booking.total)}</div>
+        ${
+          booking.booking_type === 'pickup'
+            ? `<p class="tiny">Pickup at <strong>${esc(booking.branch?.name || 'the studio')}</strong> · normally ready in 1–2 days.</p>`
+            : booking.branch
+              ? `<p class="tiny">Routed to <strong>${esc(booking.branch.name)}</strong>, ${booking.event_time ? `starting ${esc(formatTime(booking.event_time))}` : 'nearest to your service address'}.</p>`
+              : '<p class="tiny">We are double-checking which branch covers your address and will be in touch.</p>'
+        }
+        ${
+          Number(booking.discount_amount)
+            ? `<p class="tiny">Discount applied: ${esc(booking.discount_label)} — you save ${peso(booking.discount_amount)}.</p>`
+            : ''
+        }
         <p class="tiny">You can follow the status and payment updates from your bookings page.</p>
         <div class="modal-actions">
           <button class="btn btn-primary" type="button" data-success-view>View my bookings</button>
@@ -1056,7 +1324,11 @@ function showBookingSuccess(booking) {
 function filteredAdminBookings() {
   const search = state.adminSearch.trim().toLowerCase();
   return [...state.bookings]
-    .filter((booking) => (state.adminStatus === 'all' ? true : booking.status === state.adminStatus))
+    .filter((booking) => {
+      if (state.adminStatus === 'all') return true;
+      if (state.adminStatus === 'review') return booking.needs_review;
+      return booking.status === state.adminStatus;
+    })
     .filter((booking) => {
       if (!search) return true;
       return [
@@ -1064,6 +1336,8 @@ function filteredAdminBookings() {
         booking.customer?.name,
         booking.customer?.email,
         booking.venue,
+        booking.address,
+        booking.branch?.name,
         ...(booking.items || []).map((item) => item.name),
       ]
         .filter(Boolean)
@@ -1087,6 +1361,7 @@ function adminBookingsTable(list) {
           <th>Booking</th>
           <th>Customer</th>
           <th>Items</th>
+          <th>Branch</th>
           <th>Crew</th>
           <th>Status</th>
           <th>Payment</th>
@@ -1111,6 +1386,10 @@ function adminBookingsTable(list) {
               <span class="cell-main">${esc(bookingServiceSummary(booking))}</span>
               <span class="cell-sub">${esc(booking.venue)}</span>
             </td>
+            <td>
+              ${booking.needs_review ? statusBadge('review', 'Needs branch') : `<span class="cell-main">${esc(booking.branch?.name || '—')}</span>`}
+              <span class="cell-sub">${esc(booking.address || '')}</span>
+            </td>
             <td>${booking.staff ? esc(booking.staff.name) : '<span class="muted">Unassigned</span>'}</td>
             <td>${statusBadge(booking.status)}</td>
             <td>${statusBadge(booking.payment_status)}</td>
@@ -1124,58 +1403,387 @@ function adminBookingsTable(list) {
 }
 
 function renderAdminTeam() {
-  const staff = [...state.staff].sort((a, b) => a.name.localeCompare(b.name));
+  const crew = [...state.staff].sort((a, b) => a.name.localeCompare(b.name));
+  const accounts = [...state.accounts].sort((a, b) => a.name.localeCompare(b.name));
+  const isOwner = state.user.role === 'admin';
   viewRoot.innerHTML = `
     <div class="page-intro">
-      <div><h2>${plural(staff.length, 'crew account')}</h2><p>Staff only see bookings assigned to them.</p></div>
+      <div><h2>Who works in the studio</h2><p>Only the owner and the two branch heads sign in. Crew are assignment records — no passwords, no login pages.</p></div>
     </div>
-    <div class="two-col">
+    ${
+      isOwner
+        ? `<div class="panel">
+            <div class="panel-head"><div><h3>Studio accounts</h3><p>Owner and branch heads. Deactivation takes effect on their next request.</p></div></div>
+            <div class="account-list">
+              ${accounts
+                .map(
+                  (account) => `
+                  <div class="account-row">
+                    <div class="account-who">
+                      <span class="workload-avatar">${esc(initials(account.name))}</span>
+                      <div>
+                        <strong>${esc(account.name)}</strong>
+                        <span>${esc(account.email)} · ${account.role === 'admin' ? 'Owner' : esc(branchName(account.branch_id))} · ${account.mfa_enabled ? '2FA on' : '2FA off'}</span>
+                      </div>
+                    </div>
+                    <div class="account-actions">
+                      ${statusBadge(account.active === false ? 'cancelled' : 'confirmed', account.active === false ? 'deactivated' : 'active')}
+                      <button class="btn btn-sm" type="button" data-account-reset="${esc(account.id)}">Reset password</button>
+                      <button class="btn btn-sm" type="button" data-account-toggle="${esc(account.id)}" data-active="${account.active === false ? 'false' : 'true'}">${account.active === false ? 'Activate' : 'Deactivate'}</button>
+                    </div>
+                  </div>`
+                )
+                .join('')}
+            </div>
+            <div class="panel-body">
+              <h3 class="form-title">Add a studio account</h3>
+              <form id="account-form" class="form-grid" novalidate>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="account-name">Full name</label>
+                    <input class="input" id="account-name" name="name" maxlength="80" autocomplete="name" required />
+                  </div>
+                  <div class="field">
+                    <label for="account-email">Email</label>
+                    <input class="input" id="account-email" name="email" type="email" maxlength="160" autocomplete="email" required />
+                  </div>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="account-role">Role</label>
+                    <select class="select" id="account-role" name="role">
+                      <option value="branch_admin">Branch head</option>
+                      <option value="admin">Studio owner</option>
+                    </select>
+                  </div>
+                  <div class="field" id="account-branch-field">
+                    <label for="account-branch">Branch</label>
+                    <select class="select" id="account-branch" name="branch_id">
+                      <option value="">Choose a branch</option>
+                      ${state.branches.map((branch) => `<option value="${esc(branch.id)}">${esc(branch.name)}</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="account-password">Temporary password</label>
+                  <input class="input" id="account-password" name="password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+                  <span class="field-hint">At least 10 characters with uppercase, lowercase, a number, and a symbol. They can change it after signing in.</span>
+                </div>
+                <div class="form-error" data-account-error role="alert"></div>
+                <div class="form-actions"><button class="btn btn-primary" type="submit">Create account</button></div>
+              </form>
+            </div>
+          </div>`
+        : ''
+    }
+    <div class="two-col" style="margin-top:18px">
       <div class="panel">
-        <div class="panel-head"><div><h3>Add crew</h3><p>Create a sign-in for a photographer, printer, or booth attendant.</p></div></div>
+        <div class="panel-head"><div><h3>Add crew</h3><p>A photographer, printer, or booth attendant. Crew do not sign in.</p></div></div>
         <div class="panel-body">
           <form id="team-form" class="form-grid" novalidate>
             <div class="field">
               <label for="team-name">Full name</label>
               <input class="input" id="team-name" name="name" maxlength="80" autocomplete="name" required />
             </div>
-            <div class="field">
-              <label for="team-email">Email</label>
-              <input class="input" id="team-email" name="email" type="email" maxlength="160" autocomplete="email" required />
+            <div class="field-row">
+              <div class="field">
+                <label for="team-phone">Phone <span class="field-hint">optional</span></label>
+                <input class="input" id="team-phone" name="phone" maxlength="30" autocomplete="tel" />
+              </div>
+              <div class="field">
+                <label for="team-email">Email <span class="field-hint">optional</span></label>
+                <input class="input" id="team-email" name="email" type="email" maxlength="160" autocomplete="email" />
+              </div>
             </div>
             <div class="field">
-              <label for="team-phone">Phone <span class="field-hint">optional</span></label>
-              <input class="input" id="team-phone" name="phone" maxlength="30" autocomplete="tel" />
+              <label for="team-branch">Branch</label>
+              ${
+                state.user.role === 'admin'
+                  ? `<select class="select" id="team-branch" name="branch_id" required>
+                      <option value="">Choose a branch</option>
+                      ${state.branches.map((branch) => `<option value="${esc(branch.id)}">${esc(branch.name)}</option>`).join('')}
+                    </select>`
+                  : `<input class="input" id="team-branch" type="text" value="${esc(branchName(state.user.branch_id))}" disabled />`
+              }
             </div>
-            <div class="field">
-              <label for="team-password">Temporary password</label>
-              <input class="input" id="team-password" name="password" type="password" minlength="8" maxlength="128" autocomplete="new-password" required />
-              <span class="field-hint">At least 8 characters, with a letter and a number.</span>
-            </div>
+            <p class="booking-type-note">Crew records are for assignment only. They cannot sign in, so there is no password to share.</p>
             <div class="form-error" data-team-error role="alert"></div>
             <div class="form-actions">
-              <button class="btn btn-primary" type="submit">Create crew account</button>
+              <button class="btn btn-primary" type="submit">Create crew record</button>
             </div>
           </form>
         </div>
       </div>
       <div class="panel">
-        <div class="panel-head"><div><h3>Crew</h3><p>Accounts available for assignment</p></div></div>
+        <div class="panel-head"><div><h3>Crew</h3><p>${plural(crew.length, 'record')} available for assignment</p></div></div>
         ${
-          staff.length
-            ? `<div class="workload-list">${staff
+          crew.length
+            ? `<div class="account-list">${crew
                 .map(
                   (member) => `
-                  <div class="workload-row">
-                    <span class="workload-avatar">${esc(initials(member.name))}</span>
-                    <strong>${esc(member.name)}</strong>
-                    <span>${esc(member.email)}${member.phone ? ` · ${esc(member.phone)}` : ''}</span>
+                  <div class="account-row">
+                    <div class="account-who">
+                      <span class="workload-avatar">${esc(initials(member.name))}</span>
+                      <div>
+                        <strong>${esc(member.name)}</strong>
+                        <span>${esc(branchName(member.branch_id))}${member.phone ? ` · ${esc(member.phone)}` : ''}${member.email && !member.email.endsWith('@crew.preciousmoments.local') ? ` · ${esc(member.email)}` : ''}</span>
+                      </div>
+                    </div>
+                    <div class="account-actions">
+                      ${statusBadge(member.active === false ? 'cancelled' : 'confirmed', member.active === false ? 'inactive' : 'active')}
+                      <button class="btn btn-sm" type="button" data-crew-toggle="${esc(member.id)}" data-active="${member.active === false ? 'false' : 'true'}">${member.active === false ? 'Activate' : 'Deactivate'}</button>
+                    </div>
                   </div>`
                 )
                 .join('')}</div>`
-            : '<div class="empty-state"><p>No crew accounts yet. Add the first one on the left.</p></div>'
+            : '<div class="empty-state"><p>No crew records yet. Add the first one on the left.</p></div>'
         }
       </div>
     </div>`;
+}
+
+/* ---------- Account security ---------- */
+
+function renderAccount() {
+  const user = state.user;
+  const mfa = Boolean(user.mfa_enabled);
+  const setup = state.mfaSetup;
+  viewRoot.innerHTML = `
+    <div class="page-intro">
+      <div><h2>Account &amp; security</h2><p>The sign-in for ${esc(user.email)}.</p></div>
+    </div>
+    ${user.must_change_password ? '<div class="form-error show" style="margin-bottom:16px">Your password was reset by the studio. Choose a new one below.</div>' : ''}
+    <div class="two-col">
+      <div class="stack">
+        <div class="panel">
+          <div class="panel-head"><div><h3>Your profile</h3><p>Contact the studio if this needs to change</p></div></div>
+          <div class="panel-body">
+            <div class="detail-grid">
+              <div><span>Name</span><strong>${esc(user.name)}</strong></div>
+              <div><span>Email</span><strong>${esc(user.email)}</strong></div>
+              <div><span>Role</span><strong>${esc(user.role === 'admin' ? 'Studio owner' : user.role === 'branch_admin' ? 'Branch head' : 'Customer')}</strong></div>
+              <div><span>Branch</span><strong>${esc(user.role === 'admin' ? 'Both branches' : user.role === 'branch_admin' ? branchName(user.branch_id) : '—')}</strong></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><h3>Change password</h3><p>At least 10 characters with uppercase, lowercase, a number, and a symbol.</p></div></div>
+          <div class="panel-body">
+            <form id="password-form" class="form-grid" novalidate>
+              <div class="field"><label for="current-password">Current password</label><input class="input" type="password" id="current-password" name="current_password" autocomplete="current-password" required /></div>
+              <div class="field"><label for="new-password">New password</label><input class="input" type="password" id="new-password" name="new_password" autocomplete="new-password" minlength="10" required /></div>
+              <div class="field"><label for="confirm-password">Repeat new password</label><input class="input" type="password" id="confirm-password" name="confirm_password" autocomplete="new-password" minlength="10" required /></div>
+              <div class="form-error" data-password-error role="alert"></div>
+              <div class="form-actions"><button class="btn btn-primary" type="submit">Update password</button></div>
+            </form>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h3>Two-factor authentication</h3><p>${mfa ? 'On — a code is required at sign-in' : 'Off — add an authenticator app'}</p></div>
+            ${statusBadge(mfa ? 'confirmed' : 'pending', mfa ? 'protected' : 'not set')}
+          </div>
+          <div class="panel-body">
+            ${
+              mfa
+                ? `<p class="tiny">A 6-digit code from your authenticator app is required after your password.</p>
+                  <form id="mfa-disable-form" class="form-grid" novalidate>
+                    <div class="field"><label for="mfa-password">Current password</label><input class="input" type="password" id="mfa-password" name="password" autocomplete="current-password" required /></div>
+                    <div class="form-error" data-mfa-error role="alert"></div>
+                    <div class="form-actions"><button class="btn" type="submit">Turn off two-factor</button></div>
+                  </form>`
+                : `<p class="tiny">Use any authenticator app. The studio will never ask for the code by email or chat.</p>
+                  ${
+                    setup
+                      ? `<div class="mfa-secret">
+                          <span>Manual setup key</span>
+                          <code>${esc(setup.secret.replace(/(.{4})/g, '$1 ').trim())}</code>
+                          <p class="tiny">Or <a href="${esc(setup.otpauth)}">add it to your authenticator app</a>.</p>
+                        </div>
+                        <form id="mfa-enable-form" class="form-grid" novalidate>
+                          <div class="field"><label for="mfa-code">Code from the app</label><input class="input" id="mfa-code" name="code" inputmode="numeric" maxlength="6" placeholder="000000" required /></div>
+                          <div class="form-error" data-mfa-error role="alert"></div>
+                          <div class="form-actions"><button class="btn btn-primary" type="submit">Turn on two-factor</button></div>
+                        </form>`
+                      : '<div class="form-actions"><button class="btn btn-primary" type="button" data-mfa-start>Set up two-factor</button></div>'
+                  }`
+            }
+          </div>
+        </div>
+        ${
+          user.role === 'admin'
+            ? `<div class="panel"><div class="panel-head"><div><h3>Managing other accounts</h3><p>Create, deactivate, and reset the branch heads in Team.</p></div></div><div class="panel-body"><button class="btn" type="button" data-nav="team">Open Team → Accounts</button></div></div>`
+            : ''
+        }
+      </div>
+    </div>`;
+}
+
+/* ---------- Customer discounts ---------- */
+
+function renderAdminDiscounts() {
+  const discounts = state.discounts || [];
+  viewRoot.innerHTML = `
+    <div class="page-intro">
+      <div><h2>Customer discounts</h2><p>Assign a percentage or a fixed amount to a customer. It is applied automatically to their next booking.</p></div>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-head"><div><h3>Assign a discount</h3><p>Only the studio owner can create or remove these.</p></div></div>
+        <div class="panel-body">
+          <form id="discount-form" class="form-grid" novalidate>
+            <div class="field">
+              <label for="discount-email">Customer email</label>
+              <input class="input" id="discount-email" name="customer_email" type="email" maxlength="160" placeholder="customer@example.com" required />
+              <span class="field-hint">Use the email on their customer account.</span>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="discount-type">Type</label>
+                <select class="select" id="discount-type" name="type">
+                  <option value="percent">Percentage</option>
+                  <option value="fixed">Fixed amount</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="discount-value">Value</label>
+                <input class="input" id="discount-value" name="value" type="number" min="1" step="0.01" placeholder="10" required />
+              </div>
+            </div>
+            <div class="field">
+              <label for="discount-note">Reason <span class="field-hint">optional</span></label>
+              <input class="input" id="discount-note" name="note" maxlength="80" placeholder="Loyalty discount" />
+            </div>
+            <div class="form-error" data-discount-error role="alert"></div>
+            <div class="form-actions"><button class="btn btn-primary" type="submit">Save discount</button></div>
+          </form>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><h3>Assigned discounts</h3><p>Active discounts apply to new bookings only.</p></div></div>
+        ${
+          discounts.length
+            ? `<div class="account-list">${discounts
+                .map(
+                  (discount) => `
+                  <div class="account-row">
+                    <div class="account-who">
+                      <span class="workload-avatar">${esc(initials(discount.customer?.name || '?'))}</span>
+                      <div>
+                        <strong>${esc(discount.customer?.name || 'Customer')}</strong>
+                        <span>${esc(discount.customer?.email || '')} · ${esc(discount.label)}</span>
+                      </div>
+                    </div>
+                    <div class="account-actions">
+                      ${statusBadge(discount.active === false ? 'cancelled' : 'confirmed', discount.active === false ? 'inactive' : 'active')}
+                      <button class="btn btn-sm" type="button" data-discount-toggle="${esc(discount.id)}" data-active="${discount.active === false ? 'false' : 'true'}">${discount.active === false ? 'Activate' : 'Deactivate'}</button>
+                    </div>
+                  </div>`
+                )
+                .join('')}</div>`
+            : '<div class="empty-state"><p>No discounts assigned yet.</p></div>'
+        }
+      </div>
+    </div>`;
+}
+
+/* ---------- Assistant ---------- */
+
+function renderAssistantLog() {
+  const log = document.querySelector('[data-assistant-log]');
+  if (!log) return;
+  if (!state.chat.length) {
+    log.innerHTML =
+      '<p class="assistant-hint">Ask about prices, branches, availability, payments, pickup time, or your own booking status.</p>';
+    return;
+  }
+  log.innerHTML = state.chat
+    .map((message) => `<div class="assistant-msg ${message.role}">${esc(message.text)}</div>`)
+    .join('');
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendAssistant(message) {
+  const text = String(message || '').trim();
+  if (!text) return;
+  state.chat.push({ role: 'user', text });
+  renderAssistantLog();
+  try {
+    const { answer } = await api('/api/assistant', {
+      method: 'POST',
+      body: JSON.stringify({ message: text }),
+    });
+    state.chat.push({ role: 'studio', text: answer });
+  } catch (error) {
+    state.chat.push({ role: 'studio', text: error.message });
+  }
+  renderAssistantLog();
+}
+
+function showTemporaryPassword(name, email, temporary) {
+  state.lastModalFocus = document.activeElement;
+  modalRoot.innerHTML = `
+    <div class="modal-overlay open" data-modal-overlay>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="temp-title">
+        <h2 id="temp-title">Temporary password</h2>
+        <p>Hand this to <strong>${esc(name)}</strong> (${esc(email)}) privately. It is shown once, and two-factor was reset for the account.</p>
+        <div class="modal-ref"><code>${esc(temporary)}</code></div>
+        <p class="tiny">They can change it under Account &amp; security after signing in.</p>
+        <div class="modal-actions"><button class="btn btn-primary" type="button" data-modal-close>Done</button></div>
+      </div>
+    </div>`;
+  syncBodyLock();
+  modalRoot.querySelector('[data-modal-close]')?.focus();
+}
+
+async function markAlertsRead() {
+  try {
+    await api('/api/notifications/read', { method: 'POST', body: '{}' });
+  } catch {
+    // Badge stays until the next load; the list itself is already readable.
+  }
+  state.unread = 0;
+  renderChrome();
+}
+
+function renderAlerts() {
+  const list = state.notifications;
+  const scope = state.user.role === 'admin' ? 'either branch' : branchName(state.user.branch_id);
+  viewRoot.innerHTML = `
+    <div class="page-intro">
+      <div><h2>${plural(list.length, 'alert')}</h2><p>New bookings routed to ${esc(scope)}.</p></div>
+      <div class="page-actions"><button class="btn" type="button" data-refresh-alerts>${ICONS.refresh} Refresh</button></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div><h3>Booking notifications</h3><p>Customer, service, address, and event date for each new request</p></div>
+      </div>
+      ${
+        list.length
+          ? `<div class="activity-list">${list
+              .map(
+                (item) => `
+                <div class="activity-item">
+                  <span class="workload-avatar">${esc(initials(item.title))}</span>
+                  <div class="activity-copy">
+                    <p><strong>${esc(item.title)}</strong></p>
+                    <span>${esc(item.message)}</span>
+                    <small>${relativeTime(item.created_at)}${item.read_at ? '' : ' · unread'}</small>
+                  </div>
+                  ${item.booking_id ? `<button class="btn btn-sm" type="button" data-open-booking="${esc(item.booking_id)}">Open</button>` : ''}
+                </div>`
+              )
+              .join('')}</div>`
+          : emptyState({
+              icon: 'mail',
+              title: 'No alerts yet',
+              text: 'A customer booking routed to your branch will appear here.',
+            })
+      }
+    </div>`;
+  if (state.unread) markAlertsRead();
 }
 
 function renderAdminBookings() {
@@ -1183,7 +1791,11 @@ function renderAdminBookings() {
     <div class="page-intro">
       <div><h2>Coordinate the calendar</h2><p>Confirm dates, assign a crew, and keep every status current.</p></div>
       <div class="page-actions">
-        <button class="btn" type="button" data-nav="reports">${ICONS.reports} Reports</button>
+        ${
+          state.user.role === 'admin'
+            ? `<button class="btn" type="button" data-nav="reports">${ICONS.reports} Reports</button>`
+            : `<button class="btn" type="button" data-nav="alerts">${ICONS.mail} Alerts${state.unread ? ` · ${state.unread}` : ''}</button>`
+        }
       </div>
     </div>
     <div class="panel">
@@ -1200,6 +1812,7 @@ function renderAdminBookings() {
                 `<option value="${key}" ${state.adminStatus === key ? 'selected' : ''}>${label}</option>`
             )
             .join('')}
+          <option value="review" ${state.adminStatus === 'review' ? 'selected' : ''}>Needs branch review</option>
         </select>
         <div class="toolbar-right"><span class="tiny muted" id="admin-booking-count"></span></div>
       </div>
@@ -1488,6 +2101,7 @@ function optionsHtml(entries, selected) {
 
 function drawerTemplate(booking) {
   const role = state.user.role;
+  const adminLike = isAdminRole(role);
   const due = Math.max(0, Number(booking.total) - Number(booking.amount_paid || 0));
   const paidPercent = booking.total ? Math.min(100, Math.round((Number(booking.amount_paid || 0) / Number(booking.total)) * 100)) : 0;
   const showContact = role !== 'customer';
@@ -1496,9 +2110,12 @@ function drawerTemplate(booking) {
     : [...PAYMENT_METHODS, booking.payment_method].filter(Boolean);
   const staffOptions = [
     ['', 'Unassigned'],
-    ...state.staff.map((member) => [member.id, `${member.name}${member.id === booking.staff_id ? ' (assigned)' : ''}`]),
+    ...state.staff
+      .filter((member) => !booking.branch_id || member.branch_id === booking.branch_id)
+      .map((member) => [member.id, `${member.name}${member.id === booking.staff_id ? ' (assigned)' : ''}`]),
   ];
-  const canStaffUpdate = role === 'staff' && !['completed', 'cancelled'].includes(booking.status);
+  const canStaffUpdate =
+    role === 'staff' && booking.staff_id === state.user.id && !['completed', 'cancelled'].includes(booking.status);
   const staffStatuses =
     booking.status === 'confirmed'
       ? [['in_progress', 'In progress']]
@@ -1515,18 +2132,21 @@ function drawerTemplate(booking) {
         <header class="drawer-head">
           <div>
             <h2 id="drawer-title">${esc(booking.ref)}</h2>
-            <p>${formatDate(booking.event_date, 'weekday')} · ${esc(formatTime(booking.event_time) || 'Time to confirm')} · ${peso(booking.total)}</p>
+            <p>${booking.booking_type === 'pickup' ? 'Pickup' : 'Event'} · ${formatDate(booking.event_date, 'weekday')} · ${esc(formatTime(booking.event_time) || 'Time to confirm')} · ${peso(booking.total)}</p>
             <div>${statusBadge(booking.status)} ${statusBadge(booking.payment_status)}</div>
           </div>
           <button class="drawer-close" type="button" data-drawer-close aria-label="Close booking details">${ICONS.close}</button>
         </header>
         <div class="drawer-body">
           <section class="drawer-section">
-            <h3>The date</h3>
+            <h3>${booking.booking_type === 'pickup' ? 'Pickup details' : 'The event'}</h3>
             <div class="detail-grid">
-              <div><span>Event date</span><strong>${formatDate(booking.event_date)}</strong></div>
-              <div><span>Start time</span><strong>${esc(formatTime(booking.event_time) || 'To confirm')}</strong></div>
-              <div><span>Venue</span><strong>${esc(booking.venue)}</strong></div>
+              <div><span>${booking.booking_type === 'pickup' ? 'Pickup date' : 'Event date'}</span><strong>${formatDate(booking.event_date)}</strong></div>
+              <div><span>${booking.booking_type === 'pickup' ? 'Pickup time' : 'Start time'}</span><strong>${esc(formatTime(booking.event_time) || 'To confirm')}</strong></div>
+              ${booking.booking_type === 'pickup' ? '' : `<div><span>Duration</span><strong>${Number(booking.duration_hours) || 3} hours</strong></div>`}
+              ${booking.booking_type === 'pickup' ? '<div><span>Ready</span><strong>1–2 days after the request</strong></div>' : `<div><span>Venue</span><strong>${esc(booking.venue)}</strong></div>`}
+              <div><span>Branch</span><strong>${esc(booking.needs_review ? 'Needs branch review' : booking.branch?.name || '—')}</strong></div>
+              ${showContact && booking.booking_type !== 'pickup' ? `<div><span>Service address</span><strong>${esc(booking.address || '—')}</strong></div>` : ''}
               <div><span>Booking reference</span><strong>${esc(booking.ref)}</strong></div>
               ${showContact ? `<div><span>Customer</span><strong>${esc(contact.name || '—')}</strong></div><div><span>Contact</span><strong>${esc(contact.phone || contact.email || '—')}</strong></div>` : ''}
             </div>
@@ -1536,6 +2156,12 @@ function drawerTemplate(booking) {
           <section class="drawer-section">
             <h3>Pieces &amp; services</h3>
             <div class="drawer-items">${drawerItemsTemplate(booking)}</div>
+            ${
+              Number(booking.discount_amount)
+                ? `<div class="drawer-total"><span>Subtotal</span><strong>${peso(booking.subtotal)}</strong></div>
+                   <div class="drawer-total"><span>${esc(booking.discount_label || 'Discount')}</span><strong>−${peso(booking.discount_amount)}</strong></div>`
+                : ''
+            }
             <div class="drawer-total"><span>Booking total</span><strong>${peso(booking.total)}</strong></div>
           </section>
 
@@ -1554,7 +2180,7 @@ function drawerTemplate(booking) {
               <div><span>Recorded</span><strong>${booking.paid_at ? formatDateTime(booking.paid_at) : '—'}</strong></div>
             </div>
             ${
-              role === 'admin'
+              adminLike
                 ? `<form data-form-type="payment" data-id="${esc(booking.id)}" style="margin-top:16px">
                     <div class="drawer-form">
                       <div class="field">
@@ -1587,7 +2213,7 @@ function drawerTemplate(booking) {
           </section>
 
           ${
-            role === 'admin'
+            adminLike
               ? `<section class="drawer-section">
                   <h3>Crew &amp; schedule</h3>
                   <form data-form-type="admin-booking" data-id="${esc(booking.id)}">
@@ -1604,18 +2230,46 @@ function drawerTemplate(booking) {
                           ${optionsHtml(staffOptions, booking.staff_id || '')}
                         </select>
                       </div>
-                      <div class="field">
-                        <label for="admin-date">Event date</label>
-                        <input class="input" id="admin-date" name="event_date" type="date" value="${esc(booking.event_date)}" />
-                      </div>
-                      <div class="field">
-                        <label for="admin-time">Start time</label>
-                        <input class="input" id="admin-time" name="event_time" type="time" value="${esc(booking.event_time || '')}" />
-                      </div>
-                      <div class="field field-full">
-                        <label for="admin-venue">Venue</label>
-                        <input class="input" id="admin-venue" name="venue" type="text" maxlength="160" value="${esc(booking.venue)}" />
-                      </div>
+                      ${
+                        role === 'admin'
+                          ? `<div class="field">
+                              <label for="admin-branch">Branch</label>
+                              <select class="select" id="admin-branch" name="branch_id">
+                                ${optionsHtml(
+                                  [['', 'Needs review — no branch'], ...state.branches.map((branch) => [branch.id, branch.name])],
+                                  booking.branch_id || ''
+                                )}
+                              </select>
+                            </div>`
+                          : ''
+                      }
+                      ${
+                        booking.booking_type === 'pickup'
+                          ? `<div class="field">
+                              <label for="admin-date">Pickup date</label>
+                              <input class="input" id="admin-date" name="pickup_date" type="date" value="${esc(booking.pickup_date || booking.event_date)}" />
+                            </div>
+                            <div class="field">
+                              <label for="admin-time">Pickup time</label>
+                              <input class="input" id="admin-time" name="pickup_time" type="time" value="${esc(booking.pickup_time || '')}" />
+                            </div>`
+                          : `<div class="field">
+                              <label for="admin-date">Event date</label>
+                              <input class="input" id="admin-date" name="event_date" type="date" value="${esc(booking.event_date)}" />
+                            </div>
+                            <div class="field">
+                              <label for="admin-time">Start time</label>
+                              <input class="input" id="admin-time" name="event_time" type="time" value="${esc(booking.event_time || '')}" />
+                            </div>
+                            <div class="field">
+                              <label for="admin-duration">Duration (hours)</label>
+                              <input class="input" id="admin-duration" name="duration_hours" type="number" min="1" max="12" step="0.5" value="${Number(booking.duration_hours) || 3}" />
+                            </div>
+                            <div class="field field-full">
+                              <label for="admin-venue">Venue</label>
+                              <input class="input" id="admin-venue" name="venue" type="text" maxlength="160" value="${esc(booking.venue)}" />
+                            </div>`
+                      }
                       <div class="field field-full">
                         <label for="admin-message">Add a note to the timeline <span class="field-hint">optional</span></label>
                         <input class="input" id="admin-message" name="message" type="text" maxlength="500" placeholder="e.g. Confirmed by phone; layout approved." />
@@ -1792,11 +2446,18 @@ async function submitDrawerForm(form) {
     payload = {
       status: data.get('status'),
       staff_id: data.get('staff_id') || null,
-      event_date: data.get('event_date'),
-      event_time: data.get('event_time') || '',
-      venue: data.get('venue'),
       message: data.get('message') || '',
     };
+    // Pickup and event forms carry different schedule fields; only send the
+    // ones this booking actually has.
+    if (data.get('event_date') !== null) payload.event_date = data.get('event_date');
+    if (data.get('event_time') !== null) payload.event_time = data.get('event_time') || '';
+    if (data.get('duration_hours') !== null) payload.duration_hours = Number(data.get('duration_hours'));
+    if (data.get('pickup_date') !== null) payload.pickup_date = data.get('pickup_date');
+    if (data.get('pickup_time') !== null) payload.pickup_time = data.get('pickup_time') || '';
+    if (data.get('venue') !== null) payload.venue = data.get('venue');
+    // Only the owner's form carries a branch field; others must not touch it.
+    if (form.querySelector('[name="branch_id"]')) payload.branch_id = data.get('branch_id') || null;
   }
 
   if (button) {
@@ -1869,6 +2530,20 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  if (target.closest('[data-refresh-alerts]')) {
+    target.closest('[data-refresh-alerts]').disabled = true;
+    try {
+      const { notifications, unread } = await api('/api/notifications');
+      state.notifications = notifications || [];
+      state.unread = unread || 0;
+      renderChrome();
+      renderView();
+    } catch (error) {
+      toast(error.message);
+    }
+    return;
+  }
+
   const openBookingButton = target.closest('[data-open-booking]');
   if (openBookingButton) {
     event.preventDefault();
@@ -1898,6 +2573,22 @@ document.addEventListener('click', async (event) => {
     });
     const body = document.getElementById('catalog-body');
     if (body) body.innerHTML = catalogBodyTemplate();
+    return;
+  }
+
+  const typeButton = target.closest('[data-booking-type]');
+  if (typeButton) {
+    const nextType = typeButton.dataset.bookingType === 'pickup' ? 'pickup' : 'event';
+    if (nextType === state.bookingType) return;
+    state.bookingType = nextType;
+    state.availability = null;
+    document.querySelectorAll('[data-booking-type]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.bookingType === state.bookingType);
+    });
+    const fields = document.getElementById('booking-fields');
+    if (fields) fields.innerHTML = bookingFieldsTemplate();
+    renderAvailabilityNote();
+    if (state.bookingType === 'pickup') suggestPickupBranch();
     return;
   }
 
@@ -1958,6 +2649,131 @@ document.addEventListener('click', async (event) => {
     await cancelBooking(cancel.dataset.cancelBooking);
     return;
   }
+
+  const accountToggle = target.closest('[data-account-toggle]');
+  if (accountToggle) {
+    const id = accountToggle.dataset.accountToggle;
+    const active = accountToggle.dataset.active !== 'true';
+    accountToggle.disabled = true;
+    try {
+      const { account } = await api(`/api/accounts/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active }),
+      });
+      state.accounts = state.accounts.map((item) => (item.id === account.id ? account : item));
+      toast(active ? 'Account activated.' : 'Account deactivated.');
+      renderView();
+    } catch (error) {
+      toast(error.message);
+      accountToggle.disabled = false;
+    }
+    return;
+  }
+
+  const accountReset = target.closest('[data-account-reset]');
+  if (accountReset) {
+    if (accountReset.dataset.armed !== 'true') {
+      accountReset.dataset.armed = 'true';
+      accountReset.textContent = 'Tap again to reset';
+      toast('Resetting signs them out and clears two-factor. Tap once more.');
+      return;
+    }
+    accountReset.disabled = true;
+    accountReset.textContent = 'Resetting…';
+    try {
+      const result = await api(`/api/accounts/${encodeURIComponent(accountReset.dataset.accountReset)}/reset`, {
+        method: 'POST',
+        body: JSON.stringify({ reset_mfa: true }),
+      });
+      const account = result.account;
+      state.accounts = state.accounts.map((item) =>
+        item.id === account.id
+          ? { ...item, must_change_password: true, mfa_enabled: false, active: true }
+          : item
+      );
+      showTemporaryPassword(account.name, account.email, result.temporary_password);
+    } catch (error) {
+      toast(error.message);
+      accountReset.disabled = false;
+      accountReset.textContent = 'Reset password';
+      delete accountReset.dataset.armed;
+    }
+    return;
+  }
+
+  const crewToggle = target.closest('[data-crew-toggle]');
+  if (crewToggle) {
+    const active = crewToggle.dataset.active !== 'true';
+    crewToggle.disabled = true;
+    try {
+      const { user } = await api(`/api/staff/${encodeURIComponent(crewToggle.dataset.crewToggle)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active }),
+      });
+      state.staff = state.staff.map((item) => (item.id === user.id ? user : item));
+      toast(active ? 'Crew member reactivated.' : 'Crew member deactivated.');
+      renderView();
+    } catch (error) {
+      toast(error.message);
+      crewToggle.disabled = false;
+    }
+    return;
+  }
+
+  const discountToggle = target.closest('[data-discount-toggle]');
+  if (discountToggle) {
+    const active = discountToggle.dataset.active !== 'true';
+    discountToggle.disabled = true;
+    try {
+      const { discount } = await api(`/api/discounts/${encodeURIComponent(discountToggle.dataset.discountToggle)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active }),
+      });
+      state.discounts = state.discounts.map((item) =>
+        item.id === discount.id ? { ...item, ...discount } : item
+      );
+      toast(active ? 'Discount activated.' : 'Discount deactivated.');
+      renderView();
+    } catch (error) {
+      toast(error.message);
+      discountToggle.disabled = false;
+    }
+    return;
+  }
+
+  if (target.closest('[data-mfa-start]')) {
+    const button = target.closest('[data-mfa-start]');
+    button.disabled = true;
+    button.textContent = 'Preparing…';
+    try {
+      state.mfaSetup = await api('/api/auth/mfa/setup', { method: 'POST', body: '{}' });
+      renderView();
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+      button.textContent = 'Set up two-factor';
+    }
+    return;
+  }
+
+  if (target.closest('[data-assistant-toggle]')) {
+    const panel = document.getElementById('assistant-panel');
+    if (!panel) return;
+    const open = panel.hidden;
+    panel.hidden = !open;
+    document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', String(open));
+    if (open) {
+      renderAssistantLog();
+      document.getElementById('assistant-input')?.focus();
+    }
+    return;
+  }
+  if (target.closest('[data-assistant-close]')) {
+    const panel = document.getElementById('assistant-panel');
+    if (panel) panel.hidden = true;
+    document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', 'false');
+    return;
+  }
 });
 
 document.addEventListener('change', (event) => {
@@ -1982,6 +2798,34 @@ document.addEventListener('change', (event) => {
     if (target.value === 'unpaid') amount.value = '0';
     else if (target.value === 'deposit_paid') amount.value = String(Math.ceil(total / 2));
     else if (target.value === 'paid') amount.value = String(total);
+    return;
+  }
+
+  if (target.matches('#pickup-branch')) {
+    state.pickupBranchId = target.value;
+    state.branchTouched = true;
+    const note = document.getElementById('geo-note');
+    if (note && target.value) {
+      note.textContent = `You chose ${branchName(target.value)}. Your selection is kept.`;
+    }
+    return;
+  }
+
+  if (
+    target.matches('#booking-date') ||
+    target.matches('#booking-time') ||
+    target.matches('#booking-duration') ||
+    target.matches('#booking-branch')
+  ) {
+    checkAvailability();
+    return;
+  }
+
+  if (target.matches('#account-role')) {
+    const field = document.getElementById('account-branch-field');
+    const select = document.getElementById('account-branch');
+    if (field) field.hidden = target.value === 'admin';
+    if (select) select.required = target.value !== 'admin';
     return;
   }
 
@@ -2024,20 +2868,170 @@ document.addEventListener('submit', async (event) => {
         method: 'POST',
         body: JSON.stringify({
           name: data.get('name'),
-          email: data.get('email'),
+          email: data.get('email') || '',
           phone: data.get('phone'),
-          password: data.get('password'),
+          branch_id: data.get('branch_id') || '',
         }),
       });
       state.staff.push(result.user);
-      toast('Crew account created.');
+      toast('Crew record created — no sign-in was issued.');
       renderView();
     } catch (error) {
       errorBox.textContent = error.message;
       errorBox.classList.add('show');
       button.disabled = false;
-      button.textContent = 'Create crew account';
+      button.textContent = 'Create crew record';
     }
+    return;
+  }
+  if (form.id === 'account-form') {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = form.querySelector('[data-account-error]');
+    const data = new FormData(form);
+    errorBox.classList.remove('show');
+    button.disabled = true;
+    button.textContent = 'Creating…';
+    try {
+      const result = await api('/api/accounts', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: data.get('name'),
+          email: data.get('email'),
+          role: data.get('role'),
+          branch_id: data.get('branch_id') || '',
+          password: data.get('password'),
+        }),
+      });
+      state.accounts.push(result.account);
+      toast('Studio account created.');
+      renderView();
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('show');
+      button.disabled = false;
+      button.textContent = 'Create account';
+    }
+    return;
+  }
+  if (form.id === 'discount-form') {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = form.querySelector('[data-discount-error]');
+    const data = new FormData(form);
+    errorBox.classList.remove('show');
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    try {
+      const { discount } = await api('/api/discounts', {
+        method: 'POST',
+        body: JSON.stringify({
+          customer_email: data.get('customer_email'),
+          type: data.get('type'),
+          value: Number(data.get('value')),
+          note: data.get('note'),
+        }),
+      });
+      const index = state.discounts.findIndex((item) => item.id === discount.id);
+      if (index >= 0) state.discounts[index] = { ...state.discounts[index], ...discount };
+      else state.discounts.unshift(discount);
+      toast('Discount saved.');
+      renderView();
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('show');
+      button.disabled = false;
+      button.textContent = 'Save discount';
+    }
+    return;
+  }
+  if (form.id === 'password-form') {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = form.querySelector('[data-password-error]');
+    const data = new FormData(form);
+    const setError = (message) => {
+      errorBox.textContent = message;
+      errorBox.classList.toggle('show', Boolean(message));
+    };
+    setError('');
+    if (data.get('new_password') !== data.get('confirm_password')) {
+      return setError('The two new passwords do not match.');
+    }
+    button.disabled = true;
+    button.textContent = 'Updating…';
+    try {
+      await api('/api/auth/password', {
+        method: 'POST',
+        body: JSON.stringify({
+          current_password: data.get('current_password'),
+          new_password: data.get('new_password'),
+        }),
+      });
+      state.user.must_change_password = false;
+      toast('Password updated.');
+      form.reset();
+      renderView();
+    } catch (error) {
+      setError(error.message);
+      button.disabled = false;
+      button.textContent = 'Update password';
+    }
+    return;
+  }
+  if (form.id === 'mfa-enable-form') {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = form.querySelector('[data-mfa-error]');
+    const code = String(new FormData(form).get('code') || '').replace(/\s+/g, '');
+    errorBox.classList.remove('show');
+    button.disabled = true;
+    button.textContent = 'Turning on…';
+    try {
+      await api('/api/auth/mfa/enable', { method: 'POST', body: JSON.stringify({ code }) });
+      state.user.mfa_enabled = true;
+      state.mfaSetup = null;
+      toast('Two-factor is on. You will need the app at the next sign-in.');
+      renderView();
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('show');
+      button.disabled = false;
+      button.textContent = 'Turn on two-factor';
+    }
+    return;
+  }
+  if (form.id === 'mfa-disable-form') {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = form.querySelector('[data-mfa-error]');
+    const data = new FormData(form);
+    errorBox.classList.remove('show');
+    button.disabled = true;
+    button.textContent = 'Turning off…';
+    try {
+      await api('/api/auth/mfa/disable', {
+        method: 'POST',
+        body: JSON.stringify({ password: data.get('password') }),
+      });
+      state.user.mfa_enabled = false;
+      state.mfaSetup = null;
+      toast('Two-factor turned off.');
+      renderView();
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('show');
+      button.disabled = false;
+      button.textContent = 'Turn off two-factor';
+    }
+    return;
+  }
+  if (form.id === 'assistant-form') {
+    event.preventDefault();
+    const input = document.getElementById('assistant-input');
+    const message = input?.value || '';
+    if (input) input.value = '';
+    await sendAssistant(message);
     return;
   }
   if (form.id === 'report-form') {
@@ -2109,13 +3103,30 @@ async function init() {
       return;
     }
     state.user = user;
-    const requests = [api('/api/services'), api('/api/bookings')];
-    if (user.role === 'admin') requests.push(api('/api/staff'));
-    const [catalog, bookingData, staffData] = await Promise.all(requests);
+    const requests = [
+      api('/api/services'),
+      api('/api/bookings'),
+      api('/api/branches'),
+      user.role === 'customer' ? api('/api/discounts/mine') : Promise.resolve({ discount: null }),
+      user.role === 'admin' ? api('/api/accounts') : Promise.resolve({ accounts: [] }),
+      user.role === 'admin' ? api('/api/discounts') : Promise.resolve({ discounts: [] }),
+    ];
+    if (isAdminRole(user.role)) requests.push(api('/api/staff'), api('/api/notifications'));
+    const [catalog, bookingData, branchData, discountData, accountData, allDiscounts, staffData, alertData] =
+      await Promise.all(requests);
     state.services = catalog.services || [];
     state.categories = catalog.categories || [];
     state.bookings = bookingData.bookings || [];
+    state.branches = branchData.branches || [];
+    state.customerDiscount = discountData?.discount || null;
+    state.accounts = accountData?.accounts || [];
+    state.discounts = allDiscounts?.discounts || [];
     state.staff = staffData?.staff || [];
+    state.notifications = alertData?.notifications || [];
+    state.unread = alertData?.unread || 0;
+    if (user.must_change_password) {
+      toast('Your password was reset. Choose a new one in Account & security.');
+    }
     const view = parseView();
     if (!window.location.hash) history.replaceState(null, '', `#${view}`);
     renderChrome();

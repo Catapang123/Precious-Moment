@@ -10,6 +10,7 @@
     "report": "node scripts/report.mjs",
     "report:py": "python scripts/report.py",
     "setup": "node scripts/bootstrap.mjs",
+    "setup:branches": "node scripts/setup-branches.mjs",
     "test": "node scripts/smoke.mjs"
   },
   "engines": {
