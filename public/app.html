@@ -1,4 +1,12 @@
 <!doctype html>
+<!--
+  Dashboard shell, served at /app to any signed-in role.
+
+  This file only provides the fixed chrome: sidebar, header, the empty #view
+  container, and the drawer/modal roots. All views are rendered by public/js/app.js,
+  which also handles sign-out and role-based navigation. Adding a new screen
+  means adding a branch there, not new markup here.
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -46,7 +54,7 @@
     <div class="app-main">
       <header class="app-topbar">
         <div class="topbar-left">
-          <button class="icon-button menu-toggle" type="button" data-open-sidebar aria-label="Open menu">
+          <button class="icon-button menu-toggle" type="button" data-open-sidebar aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
           <div>
@@ -76,24 +84,34 @@
       </main>
     </div>
 
-    <button class="assistant-toggle" type="button" data-assistant-toggle aria-expanded="false" aria-controls="assistant-panel">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4z" /><path d="M8 9h8M8 12h5" /></svg>
-      Ask the studio
+    <button class="assistant-toggle" type="button" data-assistant-toggle aria-expanded="false" aria-controls="assistant-panel" aria-label="Ask PRECIOUS, your AI assistant">
+      <span class="assistant-orb" aria-hidden="true">P</span>
+      Ask PRECIOUS
     </button>
-    <aside class="assistant-panel" id="assistant-panel" hidden aria-label="Studio assistant">
+    <aside class="assistant-panel" id="assistant-panel" hidden aria-label="PRECIOUS, your personal AI assistant">
       <header class="assistant-head">
-        <div><strong>Studio assistant</strong><span>Answers only from this system</span></div>
-        <button class="icon-button" type="button" data-assistant-close aria-label="Close assistant">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
-        </button>
+        <div class="assistant-id">
+          <span class="assistant-orb" aria-hidden="true">P</span>
+          <div><strong>PRECIOUS</strong><span>Your personal AI assistant</span></div>
+        </div>
+        <div class="assistant-head-actions">
+          <button class="assistant-lang" type="button" data-assistant-lang aria-pressed="false" title="Switch between English and Filipino">EN</button>
+          <button class="icon-button" type="button" data-assistant-minimize aria-label="Minimize assistant">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" /></svg>
+          </button>
+          <button class="icon-button" type="button" data-assistant-close aria-label="Close assistant">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
       </header>
       <div class="assistant-log" data-assistant-log aria-live="polite"></div>
+      <div class="assistant-suggestions" data-assistant-suggestions></div>
       <form class="assistant-form" id="assistant-form">
         <label class="sr-only" for="assistant-input">Your question</label>
-        <input class="input" id="assistant-input" name="message" maxlength="500" placeholder="Ask about prices, pickup, or your booking" autocomplete="off" />
+        <input class="input" id="assistant-input" name="message" maxlength="500" placeholder="Ask PRECIOUS anything…" autocomplete="off" />
         <button class="btn btn-primary" type="submit">Send</button>
       </form>
-      <p class="assistant-foot">Only studio information is answered. Anything else returns “Out of scope. Please ask another question.”</p>
+      <p class="assistant-foot">PRECIOUS answers only from studio data — prices, branches, availability, payments, and your own bookings.</p>
     </aside>
 
     <div id="drawer-root"></div>

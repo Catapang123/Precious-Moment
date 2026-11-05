@@ -1,4 +1,12 @@
 <!doctype html>
+<!--
+  Marketing page, served at /welcome (and at / for signed-out visitors).
+
+  Static HTML: every price and service name is rendered at runtime by home.js,
+  which fetches /api/services and fills #price-board through the shared
+  priceGroupsHtml() helper. Editing copy here is safe; editing prices happens in
+  server/catalog.js.
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />

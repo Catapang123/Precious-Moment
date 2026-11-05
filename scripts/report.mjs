@@ -1,3 +1,13 @@
+/**
+ * Writes an operations report to `reports/` as CSV.
+ *
+ *   npm run report                          # previous calendar month
+ *   npm run report -- 2026-10-01 2026-10-31 # explicit range
+ *
+ * Reads through the same store as the app, so it works against Supabase in
+ * production and the local JSON file in development. Dates are inclusive and
+ * validated before anything is written.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -29,6 +39,8 @@ if (!validDate(from) || !validDate(to) || from > to) {
   process.exit(1);
 }
 
+// A scheduled run against a local store would report on an empty or demo
+// database, so say so loudly rather than producing a quiet wrong report.
 if (!SUPABASE_URL) {
   console.warn(
     `No SUPABASE_URL set — reading the ${STORE_MODE} store. Scheduled runs should use Supabase credentials.`

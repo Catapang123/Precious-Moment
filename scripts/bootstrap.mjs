@@ -1,3 +1,12 @@
+/**
+ * Creates the first studio-owner account.
+ *
+ *   npm run setup -- owner@example.com "strong-password" "Full Name"
+ *
+ * Run once against a fresh database. It refuses to overwrite an existing email,
+ * uses the same scrypt hashing as the app, and writes to whichever store the
+ * environment selects (Supabase in production, the JSON file locally).
+ */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
@@ -20,6 +29,8 @@ if (password.length < 10 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) 
   process.exit(1);
 }
 
+// Validate before touching the database so a bad argument cannot leave a
+// half-created account behind.
 const store = await createStore();
 const users = await store.list('users');
 if (users.some((user) => user.email.toLowerCase() === email)) {

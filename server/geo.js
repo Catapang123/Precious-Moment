@@ -1,7 +1,19 @@
+/**
+ * Branch routing: turn a service address into the branch that covers it.
+ *
+ * Flow: geocode the address once (cached by nobody — one lookup per booking),
+ * measure the distance to each branch, and pick the nearest. If the two nearest
+ * branches are within BRANCH_TIE_KM the result is deliberately `null`: the
+ * booking is routed to manual review instead of guessing.
+ *
+ * Geocoding is best-effort. Any failure returns `null` with a reason, and the
+ * booking still succeeds with a branch chosen by the user or by the studio.
+ */
 import { GEOCODER_ENABLED, GEOCODER_URL, BRANCH_TIE_KM } from './config.js';
 
 const EARTH_KM = 6371;
 
+/** Great-circle distance between two `{ lat, lng }` points, in kilometres. */
 export function distanceKm(a, b) {
   const toRad = (value) => (Number(value) * Math.PI) / 180;
   const dLat = toRad(b.lat - a.lat);
@@ -15,6 +27,10 @@ export function distanceKm(a, b) {
 
 // Nearest branch for a coordinate pair. Two branches within BRANCH_TIE_KM of each
 // other are treated as a tie: the booking goes to manual review instead of a guess.
+/**
+ * Nearest branch for a point, or null when there is no clear winner.
+ * Branches without coordinates are ignored rather than treated as distance 0.
+ */
 export function assignBranch(branches, point) {
   if (!point || !Array.isArray(branches) || branches.length === 0) return null;
   const ranked = branches
@@ -31,6 +47,11 @@ let lastRequestAt = 0;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Nominatim allows one request per second and needs an identifying User-Agent.
+/**
+ * Address -> coordinates via the configured geocoder (Nominatim by default).
+ * Requests are spaced at least 1.1 seconds apart to respect its rate limit, and
+ * an 8-second timeout keeps a slow provider from holding up a booking.
+ */
 async function geocodeAddress(address) {
   if (!GEOCODER_ENABLED || !String(address || '').trim()) return null;
   const gap = Date.now() - lastRequestAt;
@@ -58,6 +79,11 @@ async function geocodeAddress(address) {
   }
 }
 
+/**
+ * Resolves a booking address to `{ branchId, reason, km? }`. `reason` is one of
+ * `nearest`, `address_not_found`, `branches_too_close`, or `no_branches`; the
+ * first and last are what the admin UI shows when a booking needs a branch.
+ */
 export async function locateBookingAddress(store, address) {
   const branches = await store.list('branches');
   const point = await geocodeAddress(address);

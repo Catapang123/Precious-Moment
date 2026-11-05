@@ -1,55 +1,40 @@
-import { api, esc, getCurrentUser, peso } from './api.js';
+/**
+ * Marketing page (`/welcome`): the public face of the studio.
+ *
+ * Fetches the live catalog for the rate board, wires the mobile navigation, and
+ * personalises the header links for a signed-in visitor. It never writes data,
+ * so it can be cached and viewed signed out.
+ */
+import { api, getCurrentUser, priceGroupsHtml } from './api.js';
+import { initScrollReveal } from './motion.js';
 
 const board = document.getElementById('price-board');
 
+// The measured Tarpaulin product replaces the old fixed-size tarp cards in the
+// customer-facing rate board. Those records stay in the database for historical
+// orders and remain editable from Pricing.
+const LEGACY_SIZED_TARPAULINS = new Set([
+  'tarpaulin',
+  'tarpaulin-2x4',
+  'tarpaulin-2x5',
+  'tarpaulin-2x6',
+  'tarpaulin-8r',
+  'tarpaulin-11r',
+  'tarpaulin-16x20',
+  'tarpaulin-20x30',
+  'tarpaulin-a4',
+]);
+
+/** Draws the rate board. The markup itself lives in `api.js` so the dashboard
+ * rate-card dialog and this page can never drift apart. */
 function renderPrices(catalog) {
   if (!board) return;
-  const categories = catalog.categories || [];
-  const services = catalog.services || [];
-
-  if (!services.length) {
-    board.innerHTML = '<div class="price-error">The rate card is taking a moment. Please refresh.</div>';
-    return;
-  }
-
-  const groups = categories
-    .map((category) => {
-      const items = services.filter((service) => service.category === category.name);
-      if (!items.length) return '';
-      return `
-        <section class="price-group" aria-labelledby="price-${esc(category.name.toLowerCase().replace(/[^a-z]+/g, '-'))}">
-          <header class="price-group-head">
-            <h3 id="price-${esc(category.name.toLowerCase().replace(/[^a-z]+/g, '-'))}">
-              ${esc(category.name)}
-              <span>${String(items.length).padStart(2, '0')} pieces</span>
-            </h3>
-            <p>${esc(category.note)}</p>
-          </header>
-          <ul class="price-list">
-            ${items
-              .map(
-                (service) => `
-              <li class="price-row">
-                <div class="price-copy">
-                  <span class="price-name">
-                    ${esc(service.name)}
-                    ${service.popular ? '<em class="price-popular">most booked</em>' : ''}
-                  </span>
-                  <span class="price-desc">${esc(service.description)}</span>
-                </div>
-                <span class="price-value">
-                  <strong>${peso(service.price)}</strong>
-                  <span>${esc(service.unit)}${service.min_qty ? ` · min ${service.min_qty}` : ''}</span>
-                </span>
-              </li>`
-              )
-              .join('')}
-          </ul>
-        </section>`;
-    })
-    .join('');
-
-  board.innerHTML = `<div class="price-groups">${groups}</div>`;
+  const visibleCatalog = {
+    ...catalog,
+    services: (catalog.services || []).filter((service) => !LEGACY_SIZED_TARPAULINS.has(service.id)),
+  };
+  const html = priceGroupsHtml(visibleCatalog);
+  board.innerHTML = html || '<div class="price-error">The rate card is taking a moment. Please refresh.</div>';
 }
 
 async function loadCatalog() {
@@ -63,6 +48,10 @@ async function loadCatalog() {
   }
 }
 
+/**
+ * Mobile navigation: toggle, close on link tap, close on outside click, and
+ * close on Escape. The header also gains a shadow once the page scrolls.
+ */
 function setupNavigation() {
   const header = document.querySelector('[data-header]');
   const toggle = document.querySelector('[data-nav-toggle]');
@@ -94,6 +83,11 @@ function setupNavigation() {
   window.addEventListener('scroll', onScroll, { passive: true });
 }
 
+/**
+ * Signed-in visitors get "My dashboard" instead of "Sign in", and every
+ * booking link points straight at the booking form. Signed-out visitors keep
+ * the default markup, so nothing flashes before the check resolves.
+ */
 async function personaliseLinks() {
   const user = await getCurrentUser().catch(() => null);
   if (!user) return;
@@ -113,3 +107,21 @@ document.querySelectorAll('[data-year]').forEach((node) => {
 setupNavigation();
 loadCatalog();
 personaliseLinks();
+
+// The marketing page is long; its lower sections settle in as they are read.
+initScrollReveal(
+  [
+    '.section-head',
+    '.price-foot',
+    '.story-photos',
+    '.story-copy',
+    '.process-head',
+    '.steps > li',
+    '.studio-copy',
+    '.studio-mock',
+    '.faq-copy',
+    '.faq-list',
+    '.cta-panel',
+    '.footer-grid',
+  ].join(', ')
+);

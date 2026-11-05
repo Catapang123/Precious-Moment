@@ -114,18 +114,60 @@ assigns the branch from the booking drawer.
 ## Products and services
 
 The catalog lives in [server/catalog.js](server/catalog.js) and is seeded into Supabase
-automatically when the `pm_services` table is empty. Prices are starting rates in
-Philippine pesos and can be edited in one place.
+automatically when the `pm_services` table is empty. On later startups the app inserts
+only products that are missing, so a newly released item reaches an existing database
+without overwriting prices or owner edits. It holds the 2026 price sheet in Philippine
+pesos: 137 services in ten public categories, quantity price breaks, a separate
+admin-only client rate list, and measurement-priced Tarpaulin and Blackout.
 
-| Group             | Items                                                                                          |
-| ----------------- | ---------------------------------------------------------------------------------------------- |
-| Print & signage   | Tarpaulin (₱25/sq ft, 2×3 ft up), Panaflex signboard with/without lights, vinyl and DTF shirts, stickers, mugs, PVC IDs |
-| Paper & keepsakes | ID pictures, lamination, ID lace, graphic layouts, black/color print and photocopy, ref magnets, invitations |
-| Photo & booth     | Photo coverage, video coverage, 4R and strip photobooths (regular and magnetic), 360 video booth, mirror booth, studio booth, photo man |
+| Category | Examples |
+| --- | --- |
+| Stickers and Decals | pre-cut and print-only stickers, 3M, decals, cut stickers |
+| Souvenirs and Personalized Items | ref magnets, mugs, key holders, totes, fans, puzzles |
+| Photo Printing and Frames | 2R–16×20 prints, sintra boards, frames with and without pictures |
+| Invitations and Printing | 3R/4R/5R invitations, passport invites, button pins, bond pads |
+| Business Cards and IDs | calling cards, PVC IDs, vellum, laces, lanyard packages |
+| Plates and Sintra | temporary and motorcycle plates, standees, stands |
+| T-shirt and Apparel Printing | shirt prints by brand and size run |
+| Tarpaulin and Signage | measured Tarpaulin and Blackout, roll-ups, X-banners, panaflex |
+| Photography and Videography | coverage, prenup, photoman, and the existing booth packages |
+| Albums and Other Services | albums, 12R prints, laminate, SDE, LED wall, frames |
 
-Area-priced items (tarpaulin, signboards) are priced per square foot with a minimum
-area. Everything else is priced per piece, page, hour block, or layout, with minimum
-quantities where they matter (for example 20 invitations).
+Area-priced items (Tarpaulin, Blackout, panaflex, 3M, frosted sticker, decals) use a
+measured length × height with a minimum billable area. Tarpaulin is ₱20/sq ft and
+Blackout is ₱30/sq ft, each with its own configuration. Decimal sides are rounded up
+individually before billing: 2.3 × 5 ft becomes 3 × 5 = 15 sq ft, while the customer's
+original 2.3 and 5 are still stored on the order. Fixed items use a unit price, an
+optional hard minimum, and `tiers` where the sheet has quantity breaks (for example a
+ref magnet at ₱35 below 30 pieces and ₱30 from 30 pieces). A quantity that falls in a
+published gap, such as 51–99 key holders, is refused with a quote request instead of
+being guessed.
+
+The customer catalog is image-first: cards show a photo, name, starting rate, a short
+description, and View details / Select actions. Double-clicking a photo opens the
+full image; Escape or the close button returns to the catalog. The previous standard
+tarp sizes remain intact in the database for existing orders but are hidden from the
+new-booking catalog by the measured Tarpaulin product.
+
+**Product images.** Main Admin and Branch Admin share one Product images screen. Either
+role can upload, preview, replace, or remove a product image for any product. Files are
+validated as JPG, PNG, or WEBP by magic bytes and dimensions (minimum 300 × 300, maximum
+4 MB), saved under a unique name, and audited with the actor and timestamp. The old
+image stays live until the replacement database write succeeds. Removing an image hides
+that product from the customer catalog. New products start hidden until an image is
+uploaded. Existing catalog rows predate the image requirement and remain visible during
+the photo migration; they are flagged **Image needed** on the Pricing and Product images
+screens and should be photographed before launch.
+
+The owner edits retail prices from **Pricing** in the dashboard; the changes apply to
+the marketing rate card, booking form, checkout, assistant, and all new bookings. The
+client-specific tarpaulin and standee rates are stored separately (`CLIENT_PRICES`),
+shown on the same page, and never overwrite a retail price. Existing bookings keep the
+name and price they were booked at. When the catalog source changes, run
+`npm run sync:prices`: it updates rows by id, inserts new ones, deactivates removed
+ones, and never deletes a record or rewrites a booking. Owner-edited rows and custom
+products are preserved on later syncs, and each service stores its own booking
+availability (pickup, event, both, or unassigned).
 
 ---
 
@@ -184,10 +226,16 @@ npm ci
 ```
 
 1. Create a Supabase project.
-2. Open the SQL editor and run [supabase/schema.sql](supabase/schema.sql). The app uses
-   `pm_` prefixed tables, so it can share a project with other work without collisions.
-   On an existing project, run [supabase/migrate-branches.sql](supabase/migrate-branches.sql)
-   and then [supabase/migrate-features.sql](supabase/migrate-features.sql) instead.
+2. Open the SQL editor and **paste the contents** of
+   [supabase/schema.sql](supabase/schema.sql) — the file path itself is not SQL. The app
+   uses `pm_` prefixed tables, so it can share a project with other work without
+   collisions. On an existing project, paste the contents of
+   [supabase/migrate-branches.sql](supabase/migrate-branches.sql), then
+   [supabase/migrate-features.sql](supabase/migrate-features.sql), and then
+   [supabase/migrate-pricing.sql](supabase/migrate-pricing.sql), and finally
+   [supabase/migrate-booking-availability.sql](supabase/migrate-booking-availability.sql),
+   and then [supabase/migrate-catalog-images-auth.sql](supabase/migrate-catalog-images-auth.sql)
+   instead.
 3. Create `.env` from [.env.example](.env.example) and fill in:
 
    ```
@@ -216,8 +264,9 @@ npm ci
    ```
 
 Open <http://localhost:3000>. That lands on the sign-up screen. The rate card and
-marketing page are at `/welcome`. The product catalog is seeded on first start; no sample
-bookings or customer accounts are created.
+marketing page are at `/welcome`. The product catalog is seeded on first start and any
+newly released products are added on later starts; no sample bookings or customer
+accounts are created.
 
 ### Environment variables
 
@@ -235,6 +284,10 @@ bookings or customer accounts are created.
 | `GEOCODER_ENABLED`          | `true`                  | Set `false` to force routed events into review    |
 | `BRANCH_TIE_KM`             | `0.25`                  | Branches closer than this send a booking to review |
 | `MAX_SIMULTANEOUS_SERVICES` | `5`                     | Booth/crew services allowed in one time window   |
+| `UPLOAD_DIR`                | `public/uploads/products` | Persistent directory for uploaded product images |
+| `PASSWORD_RESET_TTL_MINUTES` | `30`                   | Lifetime of a single-use reset link              |
+| `RESEND_API_KEY`            | —                       | Sends password-reset email through Resend        |
+| `MAIL_FROM`                 | `Precious Moments <no-reply@preciousmoments.ph>` | Verified sender for reset email |
 | `BRANCH1_ADMIN_EMAIL`       | `batangas@precious.ph`  | Email used by `setup:branches` for branch 1       |
 | `BRANCH2_ADMIN_EMAIL`       | `bauan@precious.ph`     | Email used by `setup:branches` for branch 2       |
 
@@ -267,8 +320,16 @@ for the automated test suite and offline development; use Supabase for the real 
   kept.
 - Any signed-in account can change its password from **Account & security** by supplying
   the current one.
-- If a password is forgotten, the owner resets it from Team; there is no insecure
-  emailed reset link.
+- If a password is forgotten, any customer, branch head, or owner can use **Forgot your
+  password?** on the sign-in page. The backend always returns the same message so it
+  cannot be used to discover registered emails. A 32-byte random token is stored only as
+  an HMAC hash, expires after `PASSWORD_RESET_TTL_MINUTES` (30 by default), can be used
+  once, and is checked again when the new password is saved. A successful reset revokes
+  every existing session for that account and writes request/failure/completion entries
+  to the audit log without storing passwords or tokens.
+- Password-reset email is sent through Resend's HTTPS API when `RESEND_API_KEY` is set.
+  In development without a key, the link is printed to the server console so the flow
+  can be exercised; production requires the key and `MAIL_FROM`.
 - Any account can enroll a TOTP authenticator app (Google Authenticator, Authy, 1Password,
   etc.). After enrollment, sign-in requires the 6-digit code, which is verified before a
   session cookie is issued. The challenge cookie lives five minutes and cannot act as a
@@ -312,9 +373,15 @@ The repository includes a [Render blueprint](render.yaml).
 1. Push the repository to GitHub.
 2. In Render, choose **New → Blueprint** and select the repository. Render reads
    `render.yaml` and creates a Node web service with a health check at `/api/health`.
-3. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `APP_ORIGIN` (the public Render
-   URL) in the service's environment. `SESSION_SECRET` is generated by Render.
-4. Deploy. The first request seeds the service catalog if needed.
+3. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `APP_ORIGIN` (the public Render
+   URL), `RESEND_API_KEY`, and `MAIL_FROM` (a sender on a domain verified in Resend)
+   in the service's environment. `SESSION_SECRET` is generated by Render.
+4. Deploy. The first request seeds the service catalog if needed, and later releases
+   add new products without changing existing rows.
+
+Without `RESEND_API_KEY`, the reset form still returns its generic success message
+(so it cannot be used to discover accounts) but no email is delivered. Set the key
+and a verified sender before relying on self-service recovery in production.
 
 Any Node host works (Render, Railway, Fly.io, or a VPS) with `npm ci` as the build and
 `npm start` as the start command. Use Supabase for storage so records survive restarts.
@@ -326,6 +393,9 @@ reporter on every push and pull request.
 
 ## Tech and layout
 
+For a file-by-file map — what each module owns, how a request travels, and
+where to add a feature — see [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md).
+
 ```
 server.js                 Express entrypoint
 server/app.js             REST API, sessions, RBAC, booking types, discounts, reports
@@ -336,10 +406,15 @@ server/store.js           Supabase (pm_ tables) or local JSON data layer
 server/seed.js            Catalog seed and test fixtures
 server/catalog.js         Products, services, and pricing rules
 server/security.js        scrypt, password policy, sessions, TOTP two-factor
+server/images.js          Product-image validation and disk storage
+server/mail.js            Password-reset email (Resend or dev console)
 server/reports.js         Node report builder
 supabase/schema.sql       Postgres tables, constraints, indexes, RLS
 supabase/migrate-branches.sql  Two-branch migration for an existing project
 supabase/migrate-features.sql  Booking types, discounts, accounts, MFA migration
+supabase/migrate-pricing.sql   Quantity breaks, setup fees, capacity, and review flags
+supabase/migrate-booking-availability.sql  Booking availability and product-management fields
+supabase/migrate-catalog-images-auth.sql  Images, measured pricing, resets, and audit logs
 public/                   Marketing page, auth page, dashboards, styles, JS
 scripts/bootstrap.mjs     First administrator
 scripts/setup-branches.mjs  The two branch administrator accounts
@@ -351,8 +426,9 @@ render.yaml               Render deployment blueprint
 
 ### API
 
-All mutating requests must come from the same origin and carry the session cookie.
-JSON bodies only.
+All mutating requests must come from the same origin and carry the session cookie when
+they act on a signed-in record. JSON is used except for product-image uploads, which
+send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` content type.
 
 | Method | Path                          | Access            | Purpose                                  |
 | ------ | ----------------------------- | ----------------- | ---------------------------------------- |
@@ -362,10 +438,19 @@ JSON bodies only.
 | POST   | `/api/auth/logout`            | session           | Sign out                                 |
 | GET    | `/api/auth/me`                | session           | Current user and security flags          |
 | POST   | `/api/auth/password`          | session           | Change password with the current one     |
+| POST   | `/api/auth/forgot-password`   | public            | Request a single-use reset link (generic response) |
+| POST   | `/api/auth/reset-password/validate` | public      | Check whether a reset link is still usable |
+| POST   | `/api/auth/reset-password`    | public            | Consume a reset link and set a new password |
 | POST   | `/api/auth/mfa/setup`         | session           | Start TOTP enrollment                    |
 | POST   | `/api/auth/mfa/enable`        | session           | Confirm TOTP with a code                 |
 | POST   | `/api/auth/mfa/disable`       | session           | Turn two-factor off with the password    |
 | GET    | `/api/services`               | public            | Catalog and categories                   |
+| GET    | `/api/pricing`                | admin             | Retail services, client rates, review flags |
+| PATCH  | `/api/services/:id`           | admin             | Update a price, measurement rule, or confirmation flag |
+| GET    | `/api/product-images`         | admin, branch admin | Shared catalog image console and recent changes |
+| POST   | `/api/services/:id/image`     | admin, branch admin | Upload or replace a validated product image |
+| DELETE | `/api/services/:id/image`     | admin, branch admin | Remove an image and hide the product |
+| GET    | `/api/audit-logs`             | admin             | Recent security and product-image audit entries |
 | GET    | `/api/bookings`               | session           | Role-scoped booking list                 |
 | POST   | `/api/bookings`               | customer, admin   | Create an event or pickup booking        |
 | GET    | `/api/bookings/:id`           | session, scoped   | One booking with items and timeline      |
@@ -401,20 +486,27 @@ python -m py_compile scripts/report.py
 ```
 
 The smoke test starts an isolated server on a temporary data directory, seeds local
-fixtures, and checks public pages, the sign-up entry point, the password policy, strong
-registration, event and pickup bookings, manual branch priority, geocoded routing,
-review fallback, the five-simultaneous-service limit and next open slot, print-only
-exemption, crew login refusal, crew records, studio account creation/deactivation/reset,
-two-factor enrollment and challenge, password change, discounts, the assistant's scope,
-branch isolation, payments, cross-origin protection, reports, and CSV export. It exits
-non-zero on the first failure and leaves production data untouched.
+fixtures, and checks public pages, the recovery entry point, the password policy, strong
+registration, decimal measurement rounding and tamper rejection, event and pickup
+bookings, manual branch priority, geocoded routing, review fallback, the
+five-simultaneous-service limit and next open slot, print-only exemption, crew login
+refusal, crew records, studio account creation/deactivation/reset, two-factor enrollment
+and challenge, password change, discounts, the assistant's scope, branch isolation,
+payments, quantity breaks and quote gaps, owner price edits, frozen order snapshots,
+shared image permissions/validation/replacement/removal, hashed single-use password
+resets with session revocation, client-rate confidentiality, cross-origin protection,
+reports, and CSV export. It exits non-zero on the first failure and leaves production
+data untouched.
 
 ---
 
 ## Known limits
 
-- Notifications are in-app only (the **Alerts** page). There is no email, SMS, or push
-  delivery to wire into yet, including password-reset email.
+- Notifications are in-app only (the **Alerts** page). Password-reset email is the only
+  transactional email; SMS and push delivery are not configured.
+- Uploaded photos live on disk. Use a persistent-disk host for `UPLOAD_DIR` (or mount a
+  volume) because an ephemeral Render filesystem loses images on redeploy. The database
+  stores paths and metadata, not image bytes.
 - Two-factor is available on every account and recommended for the owner and branch
   heads, but it is not forced. The owner can reset it.
 - Geocoding uses the public Nominatim service, which asks for at most one request per
@@ -425,5 +517,6 @@ non-zero on the first failure and leaves production data untouched.
   queued by the studio and is not limited by the five-slot rule.
 - Reports are CSV only. Scheduled delivery is a GitHub Actions artifact, not email.
 - Photographs on the landing and sign-in pages are from Unsplash, and contact details
-  such as `hello@preciousmoments.ph` are placeholders. Prices are illustrative starting
-  rates for a Philippine print and events studio.
+  such as `hello@preciousmoments.ph` are placeholders. Prices come from the studio's
+  2026 price sheet; conflicting workbook values and services not on the sheet are
+  flagged on the Pricing page for owner confirmation.

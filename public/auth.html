@@ -1,4 +1,11 @@
 <!doctype html>
+<!--
+  Sign-in and sign-up page, served at /login.
+
+  One document, three panels: create an account, sign in, and the two-factor
+  code step. Only one panel is visible at a time; public/js/auth.js switches
+  them and submits to /api/auth/*. The server re-validates every field.
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -116,15 +123,11 @@
             </form>
 
             <p class="auth-footnote">
-              <button class="link-button" type="button" data-forgot-password>Forgot your password?</button>
-            </p>
-            <p class="auth-footnote" data-forgot-note hidden>
-              For security, passwords are never shown or emailed. Ask the studio owner to reset your
-              password from <strong>Team → Accounts</strong>; you will choose a new one after signing in.
+              <a class="link-button" href="/forgot-password">Forgot your password?</a>
             </p>
             <p class="auth-footnote">
-              Crew records do not sign in. Only the studio owner and the two branch heads have accounts.
-              Customers sign in above.
+              Customers, branch heads, and the studio owner can recover their own account by email.
+              Crew records do not sign in.
             </p>
           </section>
 

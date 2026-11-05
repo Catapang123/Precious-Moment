@@ -1,3 +1,15 @@
+/**
+ * Precious Moments — server entry point.
+ *
+ * Responsibilities, in order:
+ *  1. Load `.env` (skipped under NODE_ENV=test so the test run controls config).
+ *  2. Refuse to start in production without Supabase, then build the store.
+ *  3. Mount the Express app and listen on PORT.
+ *  4. Close cleanly on SIGINT/SIGTERM so the port is released immediately.
+ *
+ * Routes live in `server/app.js`; persistence in `server/store.js`. This file
+ * only wires them together.
+ */
 import fs from 'node:fs';
 
 if (process.env.NODE_ENV !== 'test' && fs.existsSync('.env')) process.loadEnvFile('.env');
@@ -16,6 +28,8 @@ try {
     console.log(`Precious Moments running at http://localhost:${PORT} (${STORE_MODE} store)`);
   });
 
+  // Give in-flight requests up to five seconds to finish, then exit anyway so a
+  // hung connection cannot keep the process alive forever.
   const shutdown = (signal) => {
     console.log(`\n${signal} received. Closing server.`);
     server.close(() => process.exit(0));

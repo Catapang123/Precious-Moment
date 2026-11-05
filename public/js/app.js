@@ -1,7 +1,29 @@
+/**
+ * The signed-in dashboard (`/app`).
+ *
+ * One document serves three audiences, and the role decides which views exist:
+ *
+ *  - customer     — overview, new booking, my bookings, account
+ *  - branch head  — branch overview, bookings, payments, team, alerts, account
+ *  - owner        — everything above plus discounts, reports, and studio accounts
+ *
+ * Structure of this file, top to bottom:
+ *  1. DOM roots, labels, icons, navigation, page copy, and `state`
+ *  2. Small helpers (dates, money, names) and shared view fragments
+ *  3. One render function per view, composed from template strings
+ *  4. The booking flow (catalog, cart, availability, submit)
+ *  5. Drawer and modal rendering, focus handling, and motion
+ *  6. Event delegation for the whole dashboard, then `init()`
+ *
+ * There is no framework: every view is HTML built from `state` and inserted
+ * into `#view`. Re-rendering the current view is the update mechanism, which is
+ * why handlers are delegated from `document` rather than bound per element.
+ *
+ * All markup interpolates through `esc()` before reaching the DOM.
+ */
 import {
-  addDaysISO,
   api,
-  debounce,
+  errorInfo,
   esc,
   formatDate,
   formatDateTime,
@@ -10,10 +32,16 @@ import {
   initials,
   monthStartISO,
   peso,
+  priceGroupsHtml,
+  serviceTierSummary,
   statusLabel,
+  suggestTerm,
   toast,
   todayISO,
 } from './api.js';
+import { animateStats } from './motion.js';
+
+/* ---------- DOM roots and shared constants ---------- */
 
 const viewRoot = document.getElementById('view');
 const navRoot = document.querySelector('[data-sidebar-nav]');
@@ -21,6 +49,8 @@ const userChip = document.querySelector('[data-user-chip]');
 const drawerRoot = document.getElementById('drawer-root');
 const modalRoot = document.getElementById('modal-root');
 
+// Statuses that still hold a booth slot and still owe money. Kept in step with
+// ACTIVE_STATUSES in server/availability.js.
 const ACTIVE_STATUSES = ['pending', 'confirmed', 'in_progress', 'ready'];
 const BOOKING_LABELS = {
   pending: 'Pending request',
@@ -59,6 +89,7 @@ const ICONS = {
   refresh: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>',
 };
 
+// Sidebar per role. A key here must exist in PAGE_META and in `renderView`.
 const NAV = {
   customer: [
     { key: 'overview', label: 'Overview', icon: 'home' },
@@ -76,6 +107,8 @@ const NAV = {
     { key: 'bookings', label: 'Bookings', icon: 'bookings' },
     { key: 'payments', label: 'Payments', icon: 'payments' },
     { key: 'discounts', label: 'Discounts', icon: 'spark' },
+    { key: 'images', label: 'Product images', icon: 'camera' },
+    { key: 'pricing', label: 'Pricing', icon: 'payments' },
     { key: 'reports', label: 'Reports', icon: 'reports' },
     { key: 'team', label: 'Team', icon: 'staff' },
     { key: 'alerts', label: 'Alerts', icon: 'mail' },
@@ -85,12 +118,14 @@ const NAV = {
     { key: 'overview', label: 'Overview', icon: 'home' },
     { key: 'bookings', label: 'Bookings', icon: 'bookings' },
     { key: 'payments', label: 'Payments', icon: 'payments' },
+    { key: 'images', label: 'Product images', icon: 'camera' },
     { key: 'team', label: 'Team', icon: 'staff' },
     { key: 'alerts', label: 'Alerts', icon: 'mail' },
     { key: 'account', label: 'Account & security', icon: 'check' },
   ],
 };
 
+// Page title and subtitle per role and view, also used for the browser title.
 const PAGE_META = {
   customer: {
     overview: { title: 'Your moments', subtitle: 'Bookings, payments, and studio updates in one place.' },
@@ -108,6 +143,8 @@ const PAGE_META = {
     bookings: { title: 'Bookings', subtitle: 'Coordinate dates, crews, and service progress.' },
     payments: { title: 'Payments', subtitle: 'Keep a clear record of deposits and balances.' },
     discounts: { title: 'Discounts', subtitle: 'Assign a loyalty or courtesy discount to a customer.' },
+    images: { title: 'Product images', subtitle: 'The shared catalog photos customers see — upload, replace, or remove.' },
+    pricing: { title: 'Pricing', subtitle: 'Retail rates, quantity breaks, and the client-only price list.' },
     reports: { title: 'Reports', subtitle: 'The numbers behind the moments.' },
     team: { title: 'Team', subtitle: 'Studio accounts and the crew records available for assignment.' },
     alerts: { title: 'Alerts', subtitle: 'New bookings routed to a branch land here.' },
@@ -117,12 +154,21 @@ const PAGE_META = {
     overview: { title: 'Branch overview', subtitle: 'Your branch, from requests to recorded payments.' },
     bookings: { title: 'Branch bookings', subtitle: 'Only the bookings routed to your branch.' },
     payments: { title: 'Branch payments', subtitle: 'Deposits and balances for your branch.' },
+    images: { title: 'Product images', subtitle: 'Manage the shared catalog photos for every product, at either branch.' },
     team: { title: 'Branch team', subtitle: 'Crew records available for this branch; they do not sign in.' },
     alerts: { title: 'Alerts', subtitle: 'New bookings that were routed to your branch.' },
     account: { title: 'Account & security', subtitle: 'Password and two-factor protection for your sign-in.' },
   },
 };
 
+/* ---------- Application state ---------- */
+
+/**
+ * The single mutable store for the dashboard. Everything the views read comes
+ * from here: the signed-in user, the loaded collections, filters, and the
+ * transient booking cart. Views never fetch on their own; `init`, `navigate`,
+ * and the action handlers keep this object current and then re-render.
+ */
 const state = {
   user: null,
   bookings: [],
@@ -136,6 +182,7 @@ const state = {
   activeBooking: null,
   cart: [],
   catalogFilter: 'all',
+  catalogSearch: '',
   customerFilter: 'all',
   staffFilter: 'all',
   adminSearch: '',
@@ -147,17 +194,34 @@ const state = {
   reportLoading: false,
   reportError: '',
   bookingType: 'event',
+  typeNotice: '',
+  newProductOpen: false,
   pickupBranchId: '',
   branchTouched: false,
   customerDiscount: null,
   availability: null,
   accounts: [],
   discounts: [],
+  pricing: null,
+  pricingError: '',
+  images: null,
+  imagesError: '',
+  imageFilter: 'all',
+  imageSearch: '',
+  imageSelections: new Map(),
   chat: [],
+  // PRECIOUS: which language the panel speaks, whether a reply is pending, and
+  // the last message to resend if a request failed.
+  chatLang: 'en',
+  chatTyping: false,
+  chatRetry: '',
+  // Interface state shared by the global banners and dialogs.
+  online: typeof navigator === 'undefined' ? true : navigator.onLine,
+  pendingDraft: null,
+  sessionEnded: false,
   mfaSetup: null,
   lastFocused: null,
   lastModalFocus: null,
-  cancelArmed: false,
   drawerOpening: false,
 };
 
@@ -223,6 +287,8 @@ function getBooking(id) {
   return state.bookings.find((booking) => booking.id === id);
 }
 
+/* ---------- Shared view fragments: badges, rows, empty states ---------- */
+
 function statusBadge(status, label = '') {
   const safe = String(status || '').replace(/[^a-z_]/g, '') || 'pending';
   return `<span class="status-badge status-${safe}">${esc(label || statusLabel(safe))}</span>`;
@@ -230,7 +296,12 @@ function statusBadge(status, label = '') {
 
 function itemSummary(item) {
   if (item.pricing_mode === 'area') {
-    return `${item.name} · ${item.width_ft}×${item.height_ft} ft`;
+    const unit = item.dimension_unit === 'in' ? 'in' : 'ft';
+    const billed = billedDimensions(item);
+    const original = `${item.width_ft}×${item.height_ft} ${unit}`;
+    const final = `${billed.width}×${billed.height}`;
+    const billedChanged = item.round_dimensions_up && final !== `${item.width_ft}×${item.height_ft}`;
+    return `${item.name} · ${original}${billedChanged ? ` (billed ${final} ${unit})` : ''}`;
   }
   return `${item.name}${item.qty > 1 ? ` ×${item.qty}` : ''}`;
 }
@@ -316,6 +387,26 @@ function emptyState({ icon = 'calendar', title, text, action = '' }) {
     </div>`;
 }
 
+/**
+ * The empty state for a search that returned nothing. Unlike `emptyState`, it
+ * names the query, offers a likely correction when the typo is obvious, and
+ * always provides a one-click way out of the filters.
+ */
+function noResultsState({ title, text, suggestion = '', actions = '' }) {
+  return `
+    <div class="no-results">
+      <div class="no-results-icon">${ICONS.search}</div>
+      <h3>${esc(title)}</h3>
+      <p>${esc(text)}</p>
+      ${
+        suggestion
+          ? `<p class="tiny">Did you mean <button class="link-button" type="button" data-use-suggestion="${esc(suggestion)}">${esc(suggestion)}</button>?</p>`
+          : ''
+      }
+      ${actions ? `<div class="no-results-actions">${actions}</div>` : ''}
+    </div>`;
+}
+
 /* ---------- Chrome ---------- */
 
 function navBadge(key) {
@@ -334,6 +425,8 @@ function navBadge(key) {
   if (state.user.role === 'customer' && key === 'bookings') return activeBookings().length;
   return 0;
 }
+
+/* ---------- Shell: sidebar, header, and routing ---------- */
 
 function renderChrome() {
   if (!state.user) return;
@@ -390,6 +483,7 @@ function parseView() {
 function go(view) {
   if (!NAV[state.user.role].some((item) => item.key === view)) return;
   document.body.classList.remove('sidebar-open');
+  document.querySelector('[data-open-sidebar]')?.setAttribute('aria-expanded', 'false');
   if (window.location.hash === `#${view}`) {
     navigate(view);
   } else {
@@ -403,6 +497,10 @@ function viewPosition(view) {
   return (NAV[state.user?.role] || []).findIndex((item) => item.key === view);
 }
 
+/**
+ * Switches to a view: updates the hash, loads anything that view needs, then
+ * renders. Called by `init`, by sidebar clicks, and by `hashchange`.
+ */
 async function navigate(view) {
   if (!state.user) return;
   const allowed = NAV[state.user.role].map((item) => item.key);
@@ -412,6 +510,18 @@ async function navigate(view) {
   lastViewIndex = position;
   updatePageMeta();
   renderChrome();
+  if (state.view === 'pricing' && !state.pricing && !state.pricingError) {
+    renderView();
+    runViewTransition(direction);
+    await loadPricing();
+    return;
+  }
+  if (state.view === 'images' && !state.images && !state.imagesError) {
+    renderView();
+    runViewTransition(direction);
+    await loadProductImages();
+    return;
+  }
   if (state.view === 'reports' && !state.report && !state.reportLoading) {
     renderView();
     runViewTransition(direction);
@@ -423,6 +533,8 @@ async function navigate(view) {
   window.scrollTo(0, 0);
 }
 
+/** Renders the current view for the current role. Unknown views fall back to
+ * the overview, which is also what a hand-edited `#hash` gets. */
 function renderView() {
   if (!state.user) return;
   const role = state.user.role;
@@ -439,6 +551,8 @@ function renderView() {
     if (state.view === 'bookings') renderAdminBookings();
     else if (state.view === 'payments') renderAdminPayments();
     else if (state.view === 'discounts') renderAdminDiscounts();
+    else if (state.view === 'images') renderAdminImages();
+    else if (state.view === 'pricing') renderAdminPricing();
     else if (state.view === 'reports') renderReports();
     else if (state.view === 'team') renderAdminTeam();
     else if (state.view === 'alerts') renderAlerts();
@@ -446,9 +560,14 @@ function renderView() {
     else renderAdminOverview();
   }
   primeRows();
+  animateStats(viewRoot);
+  // A restored draft can only be poured into the form once it exists.
+  if (state.view === 'book') applyDraftFields();
 }
 
 /* ---------- Customer overview ---------- */
+
+/* ---------- Customer views ---------- */
 
 function renderCustomerOverview() {
   const upcoming = sortByEventAsc(
@@ -530,12 +649,12 @@ function renderCustomerOverview() {
             <button class="quick-action" type="button" data-nav="bookings">
               ${ICONS.calendar}<span><strong>Track a date</strong><span>Status and payments</span></span>
             </button>
-            <a class="quick-action" href="mailto:hello@preciousmoments.ph">
-              ${ICONS.mail}<span><strong>Ask the studio</strong><span>Let us help you plan</span></span>
-            </a>
-            <a class="quick-action" href="/#prices">
+            <button class="quick-action" type="button" data-assistant-open>
+              ${ICONS.mail}<span><strong>Ask PRECIOUS</strong><span>Your assistant, in English or Filipino</span></span>
+            </button>
+            <button class="quick-action" type="button" data-rate-card>
               ${ICONS.bookings}<span><strong>Browse the rate card</strong><span>Starting prices</span></span>
-            </a>
+            </button>
           </div>
         </div>
         <div class="panel">
@@ -602,6 +721,8 @@ function renderCustomerBookings() {
 }
 
 /* ---------- Staff overview ---------- */
+
+/* ---------- Staff views: read-only day and schedule ---------- */
 
 function renderStaffOverview() {
   const mine = sortByEventAsc(state.bookings);
@@ -735,6 +856,8 @@ function renderStaffSchedule() {
 
 /* ---------- Admin overview ---------- */
 
+/* ---------- Owner and branch-head overview ---------- */
+
 function renderAdminOverview() {
   const active = sortByEventAsc(activeBookings());
   const upcoming = active.filter((booking) => daysUntil(booking.event_date) >= 0);
@@ -863,20 +986,166 @@ function renderAdminOverview() {
 
 /* ---------- Booking flow ---------- */
 
-function cartTotal(item) {
-  if (item.pricing_mode === 'area') {
-    const area = Math.max(Number(item.min_area) || 1, Number(item.width_ft) * Number(item.height_ft));
-    return Math.round(area * Number(item.price));
+/* ---------- Booking flow: catalog, cart, availability ---------- */
+
+/** The price break that applies to a quantity, or null when it falls in a gap. */
+function tierForQty(item, qty = item.qty) {
+  const rows = item.tiers || [];
+  if (!rows.length) return null;
+  return (
+    rows.find(
+      (row) => qty >= Number(row.min) && (row.max === null || row.max === undefined || qty <= Number(row.max))
+    ) || null
+  );
+}
+
+/** The unit price the server will charge for this line and quantity. */
+function unitPriceFor(item, qty = item.qty) {
+  if (item.pricing_mode === 'area') return Number(item.price);
+  const row = tierForQty(item, qty);
+  return Number(row ? row.price : item.price);
+}
+
+/**
+ * Line total for the cart, matching `priceLine` on the server: area work uses
+ * width x height with the minimum billable area, fixed work uses the quantity
+ * break, and either can carry a one-off setup fee.
+ * Returns null when a tiered quantity sits between published breaks, so the
+ * UI can ask for a quote instead of inventing a price.
+ */
+/** Rounds a customer-entered dimension the way the server bills it. */
+function billedDimensions(item) {
+  const width = Number(item.width_ft);
+  const height = Number(item.height_ft);
+  if (item.round_dimensions_up === true) {
+    return {
+      width: Number.isFinite(width) ? Math.ceil(Math.round(width * 1000) / 1000) : 0,
+      height: Number.isFinite(height) ? Math.ceil(Math.round(height * 1000) / 1000) : 0,
+    };
   }
-  return Math.round(Number(item.qty) * Number(item.price));
+  return { width: Number.isFinite(width) ? width : 0, height: Number.isFinite(height) ? height : 0 };
+}
+
+function measurementProblem(item) {
+  if (item.pricing_mode !== 'area') return '';
+  const unit = item.dimension_unit === 'in' ? 'in' : 'ft';
+  const min = Number(item.min_dimension) || 1;
+  const max = Number(item.max_dimension) || (item.dimension_unit === 'in' ? 120 : 50);
+  const rawWidth = String(item.width_ft ?? '');
+  const rawHeight = String(item.height_ft ?? '');
+  if (!rawWidth.trim() || !rawHeight.trim()) return 'Enter both measurements.';
+  if (!/^\d+(?:\.\d+)?$/.test(rawWidth) || !/^\d+(?:\.\d+)?$/.test(rawHeight)) {
+    return 'Use positive numbers only.';
+  }
+  const width = Number(rawWidth);
+  const height = Number(rawHeight);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return 'Measurements must be greater than zero.';
+  }
+  if (width < min || height < min) return `Each side must be at least ${min} ${unit}.`;
+  if (width > max || height > max) return `Each side must be ${max} ${unit} or less.`;
+  return '';
+}
+
+function billableArea(item) {
+  const billed = billedDimensions(item);
+  return Math.max(Number(item.min_area) || 0, billed.width * billed.height);
+}
+
+function cartMeasurementProblems() {
+  return state.cart
+    .map((item, index) => ({ item, index, problem: measurementProblem(item) }))
+    .filter((entry) => entry.problem);
+}
+
+function cartTotal(item) {
+  const baseFee = Number(item.base_fee) || 0;
+  if (item.pricing_mode === 'area') {
+    if (measurementProblem(item)) return null;
+    return Math.round(billableArea(item) * Number(item.price) + baseFee);
+  }
+  const row = tierForQty(item, item.qty);
+  if ((item.tiers || []).length && !row) return null;
+  return Math.round(Number(item.qty) * Number(row ? row.price : item.price) + baseFee);
+}
+
+function cartGaps() {
+  return state.cart.filter(
+    (item) => item.pricing_mode !== 'area' && (item.tiers || []).length > 0 && !tierForQty(item, item.qty)
+  );
 }
 
 function cartSubtotal() {
-  return state.cart.reduce((sum, item) => sum + cartTotal(item), 0);
+  return state.cart.reduce((sum, item) => sum + (cartTotal(item) || 0), 0);
+}
+
+const AVAILABILITY_OPTIONS = [
+  { value: 'pickup', label: 'Pickup only' },
+  { value: 'event', label: 'Event booking only' },
+  { value: 'both', label: 'Pickup and event' },
+  { value: 'unassigned', label: 'Unassigned (hidden)' },
+];
+
+const AVAILABILITY_LABELS = Object.fromEntries(
+  AVAILABILITY_OPTIONS.map((option) => [option.value, option.label])
+);
+
+/** A service is visible only when its admin setting matches the chosen flow. */
+function serviceSupportsBookingType(service, type = state.bookingType) {
+  const availability = service?.booking_availability || 'unassigned';
+  return availability === 'both' || availability === type;
+}
+
+// Tarpaulin is now configured once as a measured product. The old fixed tarp
+// sizes remain intact for existing orders and for the owner to retire, but they
+// must not crowd the customer catalog with duplicate size cards.
+const LEGACY_SIZED_TARPAULINS = new Set([
+  'tarpaulin',
+  'tarpaulin-2x4',
+  'tarpaulin-2x5',
+  'tarpaulin-2x6',
+  'tarpaulin-8r',
+  'tarpaulin-11r',
+  'tarpaulin-16x20',
+  'tarpaulin-20x30',
+  'tarpaulin-a4',
+]);
+
+function availableServices(type = state.bookingType) {
+  return (state.services || []).filter(
+    (service) =>
+      service.active !== false &&
+      serviceSupportsBookingType(service, type) &&
+      !LEGACY_SIZED_TARPAULINS.has(service.id)
+  );
+}
+
+function catalogTabsTemplate() {
+  const eligible = availableServices();
+  const categories = (state.categories || []).filter((category) =>
+    eligible.some((service) => service.category === category.name)
+  );
+  if (state.catalogFilter !== 'all' && !categories.some((category) => category.name === state.catalogFilter)) {
+    state.catalogFilter = 'all';
+  }
+  return `
+    <button class="chip ${state.catalogFilter === 'all' ? 'active' : ''}" type="button" data-catalog="all">All pieces</button>
+    ${categories
+      .map(
+        (category) =>
+          `<button class="chip ${state.catalogFilter === category.name ? 'active' : ''}" type="button" data-catalog="${esc(category.name)}">${esc(category.name)}</button>`
+      )
+      .join('')}`;
+}
+
+function renderTypeNotice() {
+  const note = document.querySelector('[data-type-notice]');
+  if (!note) return;
+  note.hidden = !state.typeNotice;
+  note.textContent = state.typeNotice;
 }
 
 function renderBookView() {
-  const categories = state.categories || [];
   viewRoot.innerHTML = `
     <div class="page-intro">
       <div><h2>Build your booking</h2><p>Choose what you need, then tell us whether it is an event or a pickup.</p></div>
@@ -887,15 +1156,14 @@ function renderBookView() {
     </div>
     <div class="book-grid">
       <div class="panel catalog-panel">
-        <div class="catalog-tabs" id="catalog-tabs">
-          <button class="chip ${state.catalogFilter === 'all' ? 'active' : ''}" type="button" data-catalog="all">All pieces</button>
-          ${categories
-            .map(
-              (category) =>
-                `<button class="chip ${state.catalogFilter === category.name ? 'active' : ''}" type="button" data-catalog="${esc(category.name)}">${esc(category.name)}</button>`
-            )
-            .join('')}
+        <div class="catalog-filter-bar">
+          <div class="search-field catalog-search">
+            ${ICONS.search}
+            <input type="search" id="catalog-search" placeholder="Search products…" value="${esc(state.catalogSearch)}" aria-label="Search products" />
+          </div>
+          <span class="tiny muted">${plural(availableServices().length, 'product')}</span>
         </div>
+        <div class="catalog-tabs" id="catalog-tabs">${catalogTabsTemplate()}</div>
         <div id="catalog-body">${catalogBodyTemplate()}</div>
       </div>
 
@@ -903,6 +1171,7 @@ function renderBookView() {
         <div class="panel-head">
           <div><h3>Your booking</h3><p><span id="cart-count">${plural(state.cart.length, 'line')}</span> · estimate only</p></div>
         </div>
+        <p class="cart-type-notice" data-type-notice ${state.typeNotice ? '' : 'hidden'}>${esc(state.typeNotice)}</p>
         <div class="cart-items" id="cart-lines">${cartLinesTemplate()}</div>
         <div class="cart-totals" id="cart-totals">${cartTotalsTemplate()}</div>
         <form class="cart-form" id="booking-form" novalidate>
@@ -923,6 +1192,7 @@ function renderBookView() {
       </aside>
     </div>`;
   renderAvailabilityNote();
+  renderTypeNotice();
   if (state.bookingType === 'pickup') suggestPickupBranch();
 }
 
@@ -1029,6 +1299,11 @@ function suggestPickupBranch() {
   );
 }
 
+/**
+ * Asks the server whether the chosen date, time, and cart still fit, and stores
+ * the answer in `state.availability`. Debounced by the change handler so typing
+ * a date does not fire a request per keystroke.
+ */
 async function checkAvailability() {
   if (state.bookingType !== 'event') {
     state.availability = null;
@@ -1040,7 +1315,7 @@ async function checkAvailability() {
   const hours = Number(document.getElementById('booking-duration')?.value) || 3;
   const branchId = document.getElementById('booking-branch')?.value || '';
   const services = state.cart
-    .filter((item) => item.category === 'Photo & booth')
+    .filter((item) => item.capacity === true || item.category === 'Photo & booth')
     .map((item) => item.service_id)
     .join(',');
   if (!date || !time || !branchId || !services) {
@@ -1077,42 +1352,308 @@ function renderAvailabilityNote() {
     : `${availability.remaining} of ${availability.capacity} simultaneous service slots are still open for that window.`;
 }
 
+function serviceImageUrl(service) {
+  const url = String(service?.image_url || '');
+  if (!url) return '';
+  // Uploaded files already have a unique name. The version query is a second
+  // guard for browsers or CDNs that keep a stale copy after a replacement.
+  if (url.startsWith('/uploads/') && service.image_updated_at) {
+    return `${url}?v=${encodeURIComponent(String(service.image_updated_at))}`;
+  }
+  return url;
+}
+
+function productStarting(service) {
+  if (service.pricing_mode === 'area') {
+    return { amount: peso(service.price), suffix: `per sq ${service.dimension_unit === 'in' ? 'in' : 'ft'}` };
+  }
+  const tierPrices = (service.tiers || []).map((row) => Number(row.price)).filter(Number.isFinite);
+  if (tierPrices.length) {
+    return { amount: `from ${peso(Math.min(...tierPrices))}`, suffix: esc(service.unit) };
+  }
+  return { amount: peso(service.price), suffix: esc(service.unit) };
+}
+
+function productImageMarkup(service, className = '') {
+  const image = serviceImageUrl(service);
+  if (!image) {
+    return `<span class="product-image-missing ${className}"><span>Image pending</span><small>Studio photo needed</small></span>`;
+  }
+  return `<img class="${className}" src="${esc(image)}" alt="${esc(service.image_alt || `${service.name} product`)}" loading="lazy" />`;
+}
+
+function productCard(service) {
+  const price = productStarting(service);
+  const custom = service.pricing_mode === 'area';
+  const image = serviceImageUrl(service);
+  return `
+    <article class="product-card" data-product-card="${esc(service.id)}">
+      <button class="product-card-media ${image ? '' : 'product-card-media--missing'}" type="button" data-product-image="${esc(service.id)}" aria-label="${image ? `Enlarge ${esc(service.name)} image` : `${esc(service.name)} has no image yet`}">
+        ${productImageMarkup(service)}
+        ${image ? '<span class="product-card-zoom">Double-click to enlarge</span>' : ''}
+      </button>
+      <div class="product-card-body">
+        <div class="product-card-kicker">
+          <span>${esc(service.category)}</span>
+          ${service.popular ? '<span class="price-popular">most booked</span>' : ''}
+        </div>
+        <h3>${esc(service.name)}</h3>
+        <p class="product-card-desc">${esc(service.description || 'Made to order by the studio.')}</p>
+        <div class="product-card-foot">
+          <div class="product-price">
+            <strong>${price.amount}</strong>
+            <span>${price.suffix}${service.min_qty ? ` · min ${service.min_qty}` : ''}</span>
+          </div>
+          <div class="product-card-actions">
+            <button class="btn btn-sm" type="button" data-product-details="${esc(service.id)}">View details</button>
+            <button class="btn btn-primary btn-sm" type="button" data-select-service="${esc(service.id)}">${custom ? 'Choose size' : 'Select'}</button>
+          </div>
+        </div>
+      </div>
+    </article>`;
+}
+
 function catalogBodyTemplate() {
+  const eligible = availableServices();
   const categoryFilter = state.catalogFilter;
+  const search = String(state.catalogSearch || '').trim().toLowerCase();
   const categories = (state.categories || []).filter(
     (category) => categoryFilter === 'all' || category.name === categoryFilter
   );
   if (!state.services.length) {
     return '<div class="table-empty">The catalog is taking a moment. Refresh the page to try again.</div>';
   }
-  return categories
+  if (!eligible.length) {
+    const type = state.bookingType === 'pickup' ? 'pickup' : 'event';
+    return `<div class="table-empty">No products or services are configured for ${type} bookings yet. Ask the studio to set their booking availability in Pricing.</div>`;
+  }
+  let found = 0;
+  const markup = categories
     .map((category) => {
-      const services = state.services.filter((service) => service.category === category.name);
+      const services = eligible.filter(
+        (service) =>
+          service.category === category.name &&
+          (!search ||
+            `${service.name} ${service.description} ${service.category}`.toLowerCase().includes(search))
+      );
       if (!services.length) return '';
+      found += services.length;
       return `
         <section class="catalog-group">
-          <div class="catalog-group-head"><h3>${esc(category.name)}</h3><p>${esc(category.note)}</p></div>
-          ${services
-            .map(
-              (service) => `
-            <div class="service-row">
-              <div class="service-row-copy">
-                <strong>${esc(service.name)}${service.popular ? '<span class="price-popular">most booked</span>' : ''}</strong>
-                <p>${esc(service.description)}</p>
-              </div>
-              <div class="service-row-price">
-                <span class="price">
-                  <strong>${peso(service.price)}</strong>
-                  <span>${esc(service.unit)}${service.min_qty ? ` · min ${service.min_qty}` : ''}</span>
-                </span>
-                <button class="add-button" type="button" data-add-service="${esc(service.id)}" aria-label="Add ${esc(service.name)}">${ICONS.plus}</button>
-              </div>
-            </div>`
-            )
-            .join('')}
+          <div class="catalog-group-head"><h3>${esc(category.name)}</h3><p>${esc(category.note)}</p><span class="tiny muted">${plural(services.length, 'product')}</span></div>
+          <div class="product-grid">${services.map(productCard).join('')}</div>
         </section>`;
     })
     .join('');
+  if (!found) {
+    return noResultsState({
+      title: 'No products match that search',
+      text: 'Try a shorter product name, or choose another category above.',
+    });
+  }
+  return markup;
+}
+
+function openProductLightbox(id) {
+  const service = state.services.find((item) => item.id === id);
+  if (!service || !service.image_url) return;
+  state.lastModalFocus = document.activeElement;
+  modalRoot.innerHTML = `
+    <div class="modal-overlay product-lightbox-overlay" data-modal-overlay>
+      <div class="product-lightbox" role="dialog" aria-modal="true" aria-labelledby="lightbox-title">
+        <button class="product-lightbox-close" type="button" data-modal-close aria-label="Close image preview">${ICONS.close}</button>
+        <img src="${esc(serviceImageUrl(service))}" alt="${esc(service.image_alt || service.name)}" />
+        <p id="lightbox-title">${esc(service.name)} <span>Double-click or press Escape to close</span></p>
+      </div>
+    </div>`;
+  revealLayer(modalRoot);
+  syncBodyLock();
+  modalRoot.querySelector('[data-modal-close]')?.focus();
+}
+
+function openProductDetails(id) {
+  const service = state.services.find((item) => item.id === id);
+  if (!service) return;
+  const price = productStarting(service);
+  const custom = service.pricing_mode === 'area';
+  state.lastModalFocus = document.activeElement;
+  modalRoot.innerHTML = `
+    <div class="modal-overlay" data-modal-overlay>
+      <div class="modal product-detail-modal" role="dialog" aria-modal="true" aria-labelledby="product-detail-title">
+        <button class="modal-close" type="button" data-modal-close aria-label="Close">${ICONS.close}</button>
+        <div class="product-detail-grid">
+          <button class="product-detail-image" type="button" data-product-image="${esc(service.id)}" aria-label="Enlarge ${esc(service.name)} image">
+            ${productImageMarkup(service)}
+          </button>
+          <div class="product-detail-copy">
+            <p class="auth-eyebrow">${esc(service.category)}</p>
+            <h2 id="product-detail-title">${esc(service.name)}</h2>
+            <p>${esc(service.description || 'Made to order by the studio.')}</p>
+            <div class="product-detail-price">
+              <strong>${price.amount}</strong>
+              <span>${price.suffix}</span>
+            </div>
+            ${
+              custom
+                ? `<p class="product-detail-note">This product is priced by measurement. Enter your own length and height and the price is calculated automatically. ${service.round_dimensions_up ? 'Decimal measurements round up to the next whole foot for the final print size.' : ''}</p>`
+                : `<p class="product-detail-note">${esc(service.min_qty ? `Minimum order: ${service.min_qty}. ` : '')}Stock and finish are confirmed by the studio before production.</p>`
+            }
+            <button class="btn btn-primary button-block" type="button" data-select-service="${esc(service.id)}">${custom ? 'Choose measurement' : 'Select product'}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  revealLayer(modalRoot);
+  syncBodyLock();
+  modalRoot.querySelector('[data-select-service]')?.focus();
+}
+
+function measurementQuote(service, widthValue, heightValue) {
+  const unit = service.dimension_unit === 'in' ? 'in' : 'ft';
+  const width = Number(widthValue);
+  const height = Number(heightValue);
+  const roundUp = service.round_dimensions_up === true;
+  const billedWidth = roundUp ? Math.ceil(Math.round(width * 1000) / 1000) : width;
+  const billedHeight = roundUp ? Math.ceil(Math.round(height * 1000) / 1000) : height;
+  const area = Math.max(Number(service.min_area) || 0, billedWidth * billedHeight);
+  return {
+    width,
+    height,
+    billedWidth,
+    billedHeight,
+    area,
+    total: Math.round(area * Number(service.price) + (Number(service.base_fee) || 0)),
+    unit,
+  };
+}
+
+function updateMeasurementPreview(service) {
+  const lengthInput = document.getElementById('measure-length');
+  const heightInput = document.getElementById('measure-height');
+  if (!lengthInput || !heightInput) return;
+  const candidate = {
+    ...service,
+    width_ft: lengthInput.value,
+    height_ft: heightInput.value,
+  };
+  const problem = measurementProblem(candidate);
+  const preview = measurementQuote(service, lengthInput.value, heightInput.value);
+  const error = document.querySelector('[data-measure-error]');
+  if (error) {
+    error.textContent = problem;
+    error.classList.toggle('show', Boolean(problem));
+  }
+  lengthInput.classList.toggle('invalid', Boolean(problem) && lengthInput.value !== '');
+  heightInput.classList.toggle('invalid', Boolean(problem) && heightInput.value !== '');
+  const area = document.querySelector('[data-measure-area]');
+  const total = document.querySelector('[data-measure-total]');
+  const billed = document.querySelector('[data-measure-billed]');
+  if (area) area.textContent = `${Number.isFinite(preview.area) ? preview.area.toFixed(2).replace(/\.00$/, '') : '—'} sq ${preview.unit}`;
+  if (total) total.textContent = problem ? '—' : peso(preview.total);
+  if (billed) {
+    billed.hidden = !service.round_dimensions_up;
+    billed.textContent = service.round_dimensions_up
+      ? `Final print size: ${preview.billedWidth} × ${preview.billedHeight} ${preview.unit}`
+      : '';
+  }
+  const submit = document.querySelector('[data-measure-submit]');
+  if (submit) submit.disabled = Boolean(problem);
+}
+
+function openMeasurement(service) {
+  if (!service) return;
+  if (!serviceSupportsBookingType(service)) {
+    toast(`${service.name} is not available for ${state.bookingType} bookings.`, 'error');
+    return;
+  }
+  const unit = service.dimension_unit === 'in' ? 'in' : 'ft';
+  const min = Number(service.min_dimension) || 1;
+  const max = Number(service.max_dimension) || (unit === 'in' ? 120 : 50);
+  const defaultLength = Math.min(max, Math.max(min, unit === 'in' ? 20 : 2));
+  const defaultHeight = Math.min(max, Math.max(min, unit === 'in' ? 30 : 5));
+  state.lastModalFocus = document.activeElement;
+  modalRoot.innerHTML = `
+    <div class="modal-overlay" data-modal-overlay>
+      <div class="modal measure-modal" role="dialog" aria-modal="true" aria-labelledby="measure-title">
+        <button class="modal-close" type="button" data-modal-close aria-label="Close">${ICONS.close}</button>
+        <div class="measure-head">
+          <div class="measure-thumb">${productImageMarkup(service)}</div>
+          <div>
+            <p class="auth-eyebrow">${esc(service.category)}</p>
+            <h2 id="measure-title">${esc(service.name)}</h2>
+            <p class="modal-lead">Enter the finished size. The estimated price updates automatically.</p>
+          </div>
+        </div>
+        <form data-measure-form data-id="${esc(service.id)}" novalidate>
+          <div class="measure-row">
+            <label class="field"><span>Length</span><div class="measure-input"><input class="input" id="measure-length" type="number" min="${min}" max="${max}" step="0.01" inputmode="decimal" value="${defaultLength}" aria-label="Length in ${unit}" /><span>${unit}.</span></div></label>
+            <span class="measure-times">×</span>
+            <label class="field"><span>Height / Width</span><div class="measure-input"><input class="input" id="measure-height" type="number" min="${min}" max="${max}" step="0.01" inputmode="decimal" value="${defaultHeight}" aria-label="Height in ${unit}" /><span>${unit}.</span></div></label>
+          </div>
+          <p class="measure-note">${
+            service.round_dimensions_up
+              ? `Please enter your desired ${esc(service.name.toLowerCase())} size. Sizes with decimal measurements will be rounded up to the next whole foot to determine the final print size. Your estimated price will be automatically calculated.`
+              : `Enter a positive size in ${unit}. Each side must be at least ${min} ${unit} and no more than ${max} ${unit}.`
+          }</p>
+          <p class="measure-billed" data-measure-billed ${service.round_dimensions_up ? '' : 'hidden'}></p>
+          <div class="measure-summary">
+            <span>Total area <strong data-measure-area>—</strong></span>
+            <span>Rate <strong>${peso(service.price)} / sq ${unit}</strong></span>
+            <span class="measure-total">Estimated total <strong data-measure-total>—</strong></span>
+          </div>
+          <p class="form-error" data-measure-error role="alert"></p>
+          <div class="modal-actions">
+            <button class="btn" type="button" data-modal-close>Cancel</button>
+            <button class="btn btn-primary" type="submit" data-measure-submit>Add to booking</button>
+          </div>
+          <p class="tiny muted">The studio recalculates this price on the server when your booking is submitted.</p>
+        </form>
+      </div>
+    </div>`;
+  revealLayer(modalRoot);
+  syncBodyLock();
+  updateMeasurementPreview(service);
+  document.getElementById('measure-length')?.focus();
+}
+
+function addMeasuredService(service, width, height) {
+  const problem = measurementProblem({ ...service, width_ft: width, height_ft: height });
+  if (problem) throw new Error(problem);
+  const line = {
+    service_id: service.id,
+    name: service.name,
+    pricing_mode: 'area',
+    price: Number(service.price),
+    unit: service.unit,
+    min_area: Number(service.min_area) || 0,
+    min_qty: 1,
+    tiers: [],
+    base_fee: Number(service.base_fee) || 0,
+    dimension_unit: service.dimension_unit || 'ft',
+    round_dimensions_up: service.round_dimensions_up === true,
+    min_dimension: Number(service.min_dimension) || 1,
+    max_dimension: Number(service.max_dimension) || (service.dimension_unit === 'in' ? 120 : 50),
+    capacity: service.capacity === true,
+    qty: 1,
+    width_ft: Number(width),
+    height_ft: Number(height),
+  };
+  const existing = state.cart.find((item) => item.service_id === service.id && item.pricing_mode === 'area');
+  if (existing) Object.assign(existing, line);
+  else state.cart.push(line);
+  syncCart();
+  toast(existing ? `${service.name} size updated.` : `${service.name} added.`);
+}
+
+function selectService(id) {
+  const service = state.services.find((item) => item.id === id);
+  if (!service) return;
+  if (!serviceSupportsBookingType(service)) {
+    toast(`${service.name} is not available for ${state.bookingType} bookings.`, 'error');
+    return;
+  }
+  if (service.pricing_mode === 'area') openMeasurement(service);
+  else addService(service.id);
 }
 
 function cartLinesTemplate() {
@@ -1122,35 +1663,54 @@ function cartLinesTemplate() {
   return state.cart
     .map((item, index) => {
       const lineTotal = cartTotal(item);
-      const area = item.pricing_mode === 'area';
+      const isArea = item.pricing_mode === 'area';
+      const unit = item.dimension_unit === 'in' ? 'in' : 'ft';
+      const tiered = (item.tiers || []).length > 0;
+      const tier = tiered ? tierForQty(item, item.qty) : null;
+      const each = unitPriceFor(item, item.qty);
+      const gap = tiered && !tier;
+      const problem = measurementProblem(item);
+      const billed = billedDimensions(item);
+      const areaValue = billableArea(item);
       return `
-        <div class="cart-line">
+        <div class="cart-line ${isArea ? 'cart-line--measure' : ''}" data-cart-index="${index}">
           <div class="cart-line-top">
             <div class="cart-line-name">
               ${esc(item.name)}
-              <small>${area ? `${item.width_ft} × ${item.height_ft} ft · ${peso(item.price)} per sq ft` : `${peso(item.price)} · ${esc(item.unit)}`}</small>
+              <small>${
+                isArea
+                  ? `Custom size · ${peso(each)} per sq ${unit}${item.base_fee ? ` + ${peso(item.base_fee)} setup` : ''}`
+                  : `${peso(each)} each${tier ? ` · ${esc(tier.label)}` : ''} · ${esc(item.unit)}`
+              }</small>
             </div>
             <div class="cart-line-side">
-              <span class="cart-line-total">${peso(lineTotal)}</span>
+              <span class="cart-line-total" data-cart-line-total>${lineTotal === null ? (isArea ? 'Check size' : 'Quote') : peso(lineTotal)}</span>
               <button class="cart-line-remove" type="button" data-cart-remove="${index}" aria-label="Remove ${esc(item.name)}">×</button>
             </div>
           </div>
           <div class="cart-line-controls">
             ${
-              area
-                ? `<div class="dimension-inputs">
-                    <input type="number" min="0.5" max="50" step="0.5" value="${item.width_ft}" data-cart-width="${index}" aria-label="Width in feet" />
-                    <span>×</span>
-                    <input type="number" min="0.5" max="50" step="0.5" value="${item.height_ft}" data-cart-height="${index}" aria-label="Height in feet" />
-                    <span>ft</span>
+              isArea
+                ? `<div class="cart-measure-row">
+                    <label class="cart-measure-field"><span>Length</span><input type="number" min="${Number(item.min_dimension) || 1}" max="${Number(item.max_dimension) || (unit === 'in' ? 120 : 50)}" step="0.01" inputmode="decimal" value="${esc(item.width_ft)}" data-cart-width="${index}" aria-label="Length in ${unit}" /></label>
+                    <span class="cart-measure-x">×</span>
+                    <label class="cart-measure-field"><span>Height</span><input type="number" min="${Number(item.min_dimension) || 1}" max="${Number(item.max_dimension) || (unit === 'in' ? 120 : 50)}" step="0.01" inputmode="decimal" value="${esc(item.height_ft)}" data-cart-height="${index}" aria-label="Height in ${unit}" /></label>
+                    <span class="cart-measure-unit">${unit}.</span>
                   </div>
-                  <span class="tiny muted">min ${item.min_area} sq ft</span>`
+                  <div class="cart-measure-summary">
+                    <span>Area <strong data-cart-area>${areaValue.toFixed(2).replace(/\.00$/, '')} sq ${unit}</strong></span>
+                    <span>Rate <strong data-cart-rate>${peso(each)} / sq ${unit}</strong></span>
+                    ${item.round_dimensions_up ? `<span data-cart-billed>Billed ${billed.width} × ${billed.height} ${unit}</span>` : ''}
+                  </div>
+                  <p class="cart-measure-error ${problem ? 'show' : ''}" data-cart-error>${esc(problem)}</p>
+                  <p class="tiny muted">Each side has a ${Number(item.min_dimension) || 1} ${unit} minimum${item.round_dimensions_up ? '; decimals round up to the next whole foot for billing' : ''}.</p>`
                 : `<div class="stepper">
                     <button type="button" data-cart-step="${index}" data-delta="-1" aria-label="Decrease quantity">−</button>
                     <span>${item.qty}</span>
                     <button type="button" data-cart-step="${index}" data-delta="1" aria-label="Increase quantity">+</button>
                   </div>
-                  ${item.min_qty ? `<span class="tiny muted">min ${item.min_qty}</span>` : ''}`
+                  ${item.min_qty ? `<span class="tiny muted">min ${item.min_qty}</span>` : ''}
+                  ${gap ? '<span class="tiny price-gap">This quantity is between price breaks — ask for a quote.</span>' : ''}`
             }
           </div>
         </div>`;
@@ -1170,18 +1730,30 @@ function cartTotalsTemplate() {
   const discountAmount = discountPreview(subtotal);
   const total = subtotal - discountAmount;
   const deposit = Math.ceil(total / 2);
+  const gaps = cartGaps();
+  const invalidMeasurements = cartMeasurementProblems();
   return `
-    <div class="cart-total-row"><span>Subtotal</span><span>${peso(subtotal)}</span></div>
+    <div class="cart-total-row"><span>Subtotal</span><span>${invalidMeasurements.length ? 'Check measurements' : gaps.length ? 'Quote required' : peso(subtotal)}</span></div>
     ${
       discountAmount
         ? `<div class="cart-total-row discount"><span>${esc(state.customerDiscount.label)}</span><span>−${peso(discountAmount)}</span></div>`
         : ''
     }
-    <div class="cart-total-row"><span>Reservation fee (50%)</span><span class="deposit">${peso(deposit)}</span></div>
-    <div class="cart-total-row"><span>Balance after reservation</span><span>${peso(total - deposit)}</span></div>
-    <div class="cart-total-row grand"><span>Estimated total</span><strong>${peso(total)}</strong></div>`;
+    ${
+      invalidMeasurements.length
+        ? `<div class="cart-total-row measure-warning"><span>Measurements to fix</span><span>${plural(invalidMeasurements.length, 'line')}</span></div>`
+        : gaps.length
+        ? `<div class="cart-total-row"><span>Quantities between price breaks</span><span>${plural(gaps.length, 'line')}</span></div>`
+        : `<div class="cart-total-row"><span>Reservation fee (50%)</span><span class="deposit">${peso(deposit)}</span></div>
+           <div class="cart-total-row"><span>Balance after reservation</span><span>${peso(total - deposit)}</span></div>`
+    }
+    <div class="cart-total-row grand"><span>Estimated total</span><strong>${invalidMeasurements.length ? 'Complete sizes' : gaps.length ? 'Ask for a quote' : peso(total)}</strong></div>`;
 }
 
+/**
+ * Re-renders the cart, totals, and availability note after any cart change.
+ * Every mutation goes through here so the three can never disagree.
+ */
 function syncCart() {
   const lines = document.getElementById('cart-lines');
   const totals = document.getElementById('cart-totals');
@@ -1191,21 +1763,32 @@ function syncCart() {
   totals.innerHTML = cartTotalsTemplate();
   if (count) count.textContent = plural(state.cart.length, 'line');
   const submit = document.querySelector('#booking-form button[type="submit"]');
-  if (submit) submit.disabled = state.cart.length === 0;
+  if (submit) {
+    submit.disabled =
+      state.cart.length === 0 || !state.online || cartGaps().length > 0 || cartMeasurementProblems().length > 0;
+  }
   const clear = document.querySelector('[data-cart-clear]');
   if (clear) clear.hidden = state.cart.length === 0;
   if (document.getElementById('booking-form')) checkAvailability();
 }
 
+/** Adds a catalog item to the cart, or bumps its quantity if already there. */
 function addService(id) {
   const service = state.services.find((item) => item.id === id);
   if (!service) return;
+  if (!serviceSupportsBookingType(service)) {
+    toast(`${service.name} is not available for ${state.bookingType} bookings.`, 'error');
+    return;
+  }
+  state.typeNotice = '';
+  renderTypeNotice();
   const existing = state.cart.find(
     (item) => item.service_id === service.id && item.pricing_mode === 'fixed'
   );
   if (existing) {
     existing.qty += 1;
   } else {
+    const firstTier = (service.tiers || [])[0];
     const item = {
       service_id: service.id,
       name: service.name,
@@ -1214,13 +1797,23 @@ function addService(id) {
       unit: service.unit,
       min_area: service.min_area || 0,
       min_qty: service.min_qty || 1,
-      qty: service.min_qty || 1,
+      tiers: service.tiers || [],
+      base_fee: service.base_fee || 0,
+      dimension_unit: service.dimension_unit || 'ft',
+      round_dimensions_up: service.round_dimensions_up === true,
+      min_dimension: Number(service.min_dimension) || 1,
+      max_dimension: Number(service.max_dimension) || (service.dimension_unit === 'in' ? 120 : 50),
+      image_url: service.image_url || '',
+      image_alt: service.image_alt || '',
+      capacity: service.capacity === true,
+      qty: service.min_qty || firstTier?.min || 1,
       width_ft: null,
       height_ft: null,
     };
     if (service.pricing_mode === 'area') {
-      item.width_ft = 2;
-      item.height_ft = Math.max(2, Math.ceil((service.min_area || 2) / 2));
+      const inches = item.dimension_unit === 'in';
+      item.width_ft = inches ? 10 : 2;
+      item.height_ft = inches ? 10 : Math.max(2, Math.ceil((service.min_area || 2) / 2));
       item.qty = 1;
     }
     state.cart.push(item);
@@ -1229,6 +1822,11 @@ function addService(id) {
   toast(`${service.name} added.`);
 }
 
+/**
+ * Posts the booking, then shows the success dialog. The server recalculates
+ * every price and re-checks capacity, so a failure here is shown inline and the
+ * form is left filled in for a retry.
+ */
 async function submitBooking(form) {
   const errorBox = document.getElementById('booking-error');
   const setError = (message) => {
@@ -1238,6 +1836,28 @@ async function submitBooking(form) {
   };
   setError('');
   if (!state.cart.length) return setError('Add at least one piece before sending your request.');
+  const incompatible = state.cart.find((item) => {
+    const service = state.services.find((row) => row.id === item.service_id);
+    return !service || !serviceSupportsBookingType(service, state.bookingType);
+  });
+  if (incompatible) {
+    return setError(
+      `${incompatible.name} is not available for ${state.bookingType} bookings. Remove it or switch the booking type.`
+    );
+  }
+  const gaps = cartGaps();
+  if (gaps.length) {
+    return setError(
+      `${gaps[0].name}: ${gaps[0].qty} pieces is between published price breaks. Choose another quantity or ask the studio for a quote.`
+    );
+  }
+  const invalidMeasurements = cartMeasurementProblems();
+  if (invalidMeasurements.length) {
+    return setError(`Fix the ${invalidMeasurements.length === 1 ? 'measurement' : 'measurements'} in your booking summary before continuing.`);
+  }
+  // Field-level messages first: they point at the exact input to fix.
+  const invalid = validateBookingForm(form);
+  if (invalid) return setError(invalid);
   const data = new FormData(form);
   const type = state.bookingType;
   const payload = {
@@ -1246,6 +1866,7 @@ async function submitBooking(form) {
     items: state.cart.map((item) => ({
       service_id: item.service_id,
       qty: item.qty,
+      length_ft: item.width_ft,
       width_ft: item.width_ft,
       height_ft: item.height_ft,
     })),
@@ -1290,6 +1911,7 @@ async function submitBooking(form) {
     state.bookings.unshift(booking);
     state.cart = [];
     state.availability = null;
+    clearBookingDraft();
     renderChrome();
     renderView();
     showBookingSuccess(booking);
@@ -1336,6 +1958,8 @@ function showBookingSuccess(booking) {
 
 /* ---------- Admin bookings ---------- */
 
+/* ---------- Owner and branch-head management views ---------- */
+
 function filteredAdminBookings() {
   const search = state.adminSearch.trim().toLowerCase();
   return [...state.bookings]
@@ -1367,7 +1991,41 @@ function filteredAdminBookings() {
 
 function adminBookingsTable(list) {
   if (!list.length) {
-    return '<div class="table-empty">No bookings match this view.</div>';
+    const term = state.adminSearch.trim();
+    const hasFilter = Boolean(term) || state.adminStatus !== 'all';
+    if (!hasFilter) {
+      return emptyState({
+        icon: 'calendar',
+        title: 'No bookings yet',
+        text: 'Requests appear here as soon as a customer sends one. Nothing is hidden and nothing failed to load.',
+      });
+    }
+    // Only suggest a correction when a real value on file is close to the query.
+    const candidates = [
+      ...new Set(
+        state.bookings
+          .flatMap((booking) => [
+            booking.ref,
+            booking.customer?.name,
+            booking.customer?.email,
+            booking.venue,
+            booking.branch?.name,
+            ...(booking.items || []).map((item) => item.name),
+          ])
+          .filter(Boolean)
+      ),
+    ];
+    const suggestion = term ? suggestTerm(term, candidates) : '';
+    return noResultsState({
+      title: term ? `No bookings match “${term}”` : 'No bookings in this status',
+      text: term
+        ? 'Search checks the reference, customer, venue, branch, and item names. Try a shorter word, or clear the search to see everything.'
+        : 'No booking currently has that status. Switch back to all statuses to see the full list.',
+      suggestion,
+      actions: `<button class="btn" type="button" data-clear-search>${
+        term ? 'Clear search' : 'Show all bookings'
+      }</button>`,
+    });
   }
   return `
     <table class="data-table">
@@ -1559,6 +2217,8 @@ function renderAdminTeam() {
 
 /* ---------- Account security ---------- */
 
+/* ---------- Account security, discounts, and the assistant log ---------- */
+
 function renderAccount() {
   const user = state.user;
   const mfa = Boolean(user.mfa_enabled);
@@ -1706,24 +2366,176 @@ function renderAdminDiscounts() {
 
 /* ---------- Assistant ---------- */
 
+const CHAT_KEY = 'pm.precious.chat';
+
+/** The first thing PRECIOUS says, in both languages. */
+const PRECIOUS_GREETING = {
+  en: "Hi! I'm PRECIOUS, your AI assistant. Kumusta! I'm here to help you navigate the system, answer your questions, and assist you whenever you need help.",
+  fil: "Kumusta! Ako si PRECIOUS, ang AI assistant mo. Nandito ako para tumulong sa pag-navigate ng system, sumagot sa mga tanong mo, at gabayan ka kapag kailangan mo ng tulong.",
+};
+
+/**
+ * Suggested questions, chosen from the page the user is on. They are questions
+ * the answer engine can actually answer, so tapping one never leads to a dead
+ * end. Taglish is grouped with Filipino because that is how the answers read.
+ */
+const PRECIOUS_SUGGESTIONS = {
+  en: {
+    overview: ['How much is a photobooth?', 'Where are your branches?', 'How do I make a booking?'],
+    book: ['How much is a tarpaulin?', 'How many booth services can run at once?', 'How do I pay the reservation fee?'],
+    bookings: ['What is my booking status?', 'How long until my pickup is ready?', 'Can I move my date?'],
+    payments: ['How much is the reservation fee?', 'Which payment methods do you accept?', 'Can I move my date?'],
+    reports: ['How long does processing take?', 'How many services can run at once?', 'Where are your branches?'],
+    team: ['What are your opening hours?', 'Where are your branches?', 'How do I contact the studio?'],
+    alerts: ['What is my booking status?', 'Can I move my date?', 'How do I contact the studio?'],
+    schedule: ['What is my booking status?', 'How many services can run at once?', 'How long does processing take?'],
+    account: ['How do I contact the studio?', 'Can I move my date?', 'What is the reservation fee?'],
+    discounts: ['Do I have a discount?', 'How much is the reservation fee?', 'Where are your branches?'],
+  },
+  fil: {
+    overview: ['Magkano ang photobooth?', 'Saan ang mga branch?', 'Paano gumawa ng booking?'],
+    book: ['Magkano ang tarpaulin?', 'Ilang booth ang pwedeng sabay?', 'Paano magbayad ng reservation fee?'],
+    bookings: ['Ano ang status ng booking ko?', 'Gaano katagal bago maging ready ang pickup?', 'Pwede bang ilipat ang date?'],
+    payments: ['Magkano ang reservation fee?', 'Anong payment methods ang tinatanggap?', 'Pwede bang ilipat ang date?'],
+    reports: ['Gaano katagal ang processing?', 'Ilang serbisyo ang pwedeng sabay?', 'Saan ang mga branch?'],
+    team: ['Saan ang mga branch?', 'Ano ang opening hours?', 'Paano makipag-ugnayan sa studio?'],
+    alerts: ['Ano ang status ng booking ko?', 'Pwede bang ilipat ang date?', 'Paano makipag-ugnayan sa studio?'],
+    schedule: ['Ano ang status ng booking ko?', 'Ilang serbisyo ang pwedeng sabay?', 'Gaano katagal ang processing?'],
+    account: ['Paano makipag-ugnayan sa studio?', 'Pwede bang ilipat ang date?', 'Magkano ang reservation fee?'],
+    discounts: ['May discount ba ako?', 'Magkano ang reservation fee?', 'Saan ang mga branch?'],
+  },
+};
+
+/** Chat history survives a refresh within the tab, and nothing leaves the browser. */
+function restoreAssistantHistory() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(CHAT_KEY) || '[]');
+    if (Array.isArray(saved)) state.chat = saved.slice(-40);
+  } catch {
+    state.chat = [];
+  }
+}
+
+function saveAssistantHistory() {
+  try {
+    sessionStorage.setItem(CHAT_KEY, JSON.stringify(state.chat.slice(-40)));
+  } catch {
+    // Private mode or a full quota: the conversation still works in memory.
+  }
+}
+
+/** Renders the conversation, the greeting, and the typing indicator. */
 function renderAssistantLog() {
   const log = document.querySelector('[data-assistant-log]');
   if (!log) return;
   if (!state.chat.length) {
-    log.innerHTML =
-      '<p class="assistant-hint">Ask about prices, branches, availability, payments, pickup time, or your own booking status.</p>';
-    return;
+    log.innerHTML = `
+      <div class="assistant-greeting">
+        <span class="assistant-orb" aria-hidden="true">P</span>
+        <div><strong>PRECIOUS</strong><p>${esc(PRECIOUS_GREETING[state.chatLang])}</p></div>
+      </div>`;
+  } else {
+    log.innerHTML = state.chat
+      .map(
+        (message) => `
+        <div class="assistant-msg ${message.role}${message.error ? ' is-error' : ''}">${esc(message.text)}${
+          message.error && state.chatRetry
+            ? '<button class="assistant-retry" type="button" data-assistant-retry>Try again</button>'
+            : ''
+        }</div>`
+      )
+      .join('');
   }
-  log.innerHTML = state.chat
-    .map((message) => `<div class="assistant-msg ${message.role}">${esc(message.text)}</div>`)
-    .join('');
+  if (state.chatTyping) {
+    log.insertAdjacentHTML(
+      'beforeend',
+      '<div class="assistant-msg studio assistant-typing" aria-label="PRECIOUS is typing"><i></i><i></i><i></i></div>'
+    );
+  }
   log.scrollTop = log.scrollHeight;
+  renderAssistantSuggestions();
 }
 
+/** Suggestion chips for the current page, in the panel's current language. */
+function renderAssistantSuggestions() {
+  const box = document.querySelector('[data-assistant-suggestions]');
+  if (!box) return;
+  const table = PRECIOUS_SUGGESTIONS[state.chatLang] || PRECIOUS_SUGGESTIONS.en;
+  const list = table[state.view] || table.overview;
+  box.innerHTML = list
+    .map(
+      (question) =>
+        `<button class="assistant-chip" type="button" data-assistant-suggest="${esc(question)}">${esc(question)}</button>`
+    )
+    .join('');
+}
+
+/**
+ * Opens the in-app assistant panel without leaving the page. Focus moves to the
+ * input so a keyboard user can type immediately; `closeAssistant` restores it.
+ */
+function openAssistant() {
+  const panel = document.getElementById('assistant-panel');
+  if (!panel) return;
+  panel.classList.remove('is-min');
+  if (!panel.hidden && !panel.classList.contains('is-closing')) {
+    document.getElementById('assistant-input')?.focus();
+    renderAssistantSuggestions();
+    return;
+  }
+  delete panel.dataset.closing;
+  panel.classList.remove('is-closing');
+  panel.hidden = false;
+  renderAssistantLog();
+  requestAnimationFrame(() => panel.classList.add('is-open'));
+  // Hidden tabs can suspend rAF; open anyway rather than leaving it half-shown.
+  setTimeout(() => panel.classList.add('is-open'), 120);
+  document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', 'true');
+  document.getElementById('assistant-input')?.focus();
+}
+
+/** Collapses the panel to its header; the conversation is kept. */
+function minimizeAssistant() {
+  const panel = document.getElementById('assistant-panel');
+  if (!panel) return;
+  panel.classList.toggle('is-min');
+  if (!panel.classList.contains('is-min')) document.getElementById('assistant-input')?.focus();
+}
+
+/**
+ * Switches the panel's own copy between English and Filipino. The answer engine
+ * still replies in the language of each message, so a Taglish question gets a
+ * Taglish answer even while the buttons read English.
+ */
+function toggleAssistantLang() {
+  state.chatLang = state.chatLang === 'en' ? 'fil' : 'en';
+  const button = document.querySelector('[data-assistant-lang]');
+  if (button) {
+    button.textContent = state.chatLang === 'en' ? 'EN' : 'FIL';
+    button.setAttribute('aria-pressed', String(state.chatLang === 'fil'));
+    button.setAttribute('aria-label', state.chatLang === 'en' ? 'Switch to Filipino' : 'Switch to English');
+  }
+  const input = document.getElementById('assistant-input');
+  if (input) {
+    input.placeholder =
+      state.chatLang === 'en' ? 'Ask PRECIOUS anything…' : 'Magtanong kay PRECIOUS…';
+  }
+  renderAssistantLog();
+}
+
+/**
+ * Sends one message and renders the answer.
+ *
+ * While waiting, a typing bubble stands in for the reply so the panel never
+ * looks frozen. A failure becomes a message inside the conversation with a
+ * retry link — the earlier messages stay, so nothing is lost.
+ */
 async function sendAssistant(message) {
   const text = String(message || '').trim();
-  if (!text) return;
+  if (!text || state.chatTyping) return;
+  state.chatRetry = '';
   state.chat.push({ role: 'user', text });
+  state.chatTyping = true;
   renderAssistantLog();
   try {
     const { answer } = await api('/api/assistant', {
@@ -1732,9 +2544,281 @@ async function sendAssistant(message) {
     });
     state.chat.push({ role: 'studio', text: answer });
   } catch (error) {
-    state.chat.push({ role: 'studio', text: error.message });
+    const info = errorInfo(error);
+    state.chat.push({ role: 'studio', text: `${info.title}. ${info.message}`, error: true });
+    state.chatRetry = text;
+  } finally {
+    state.chatTyping = false;
+    saveAssistantHistory();
+    renderAssistantLog();
   }
-  renderAssistantLog();
+}
+
+/* ---------- Global interface states ---------- */
+
+/**
+ * One banner for connectivity, created on demand so every page that needs it
+ * does not have to carry the markup.
+ */
+function showNetBanner(text, { online = false } = {}) {
+  let node = document.querySelector('.net-banner');
+  if (!node) {
+    node = document.createElement('div');
+    node.className = 'net-banner';
+    node.setAttribute('role', 'status');
+    node.innerHTML = '<span class="net-dot" aria-hidden="true"></span><span class="net-copy"></span>';
+    document.body.appendChild(node);
+  }
+  node.querySelector('.net-copy').textContent = text;
+  node.classList.toggle('is-online', online);
+  requestAnimationFrame(() => node.classList.add('show'));
+}
+
+function hideNetBanner() {
+  document.querySelector('.net-banner')?.classList.remove('show');
+}
+
+function showSlowNote() {
+  let node = document.querySelector('.slow-note');
+  if (!node) {
+    node = document.createElement('div');
+    node.className = 'slow-note';
+    node.setAttribute('role', 'status');
+    document.body.appendChild(node);
+  }
+  node.textContent =
+    'Still working — your connection is slower than usual. Your input is safe; this will finish on its own.';
+  node.classList.add('show');
+  clearTimeout(showSlowNote._timer);
+  showSlowNote._timer = setTimeout(() => node.classList.remove('show'), 9000);
+}
+
+/**
+ * Reacts to the browser going offline or coming back, keeps the submit button
+ * honest while disconnected, and never blocks reading what is already loaded.
+ */
+function setupConnectivity() {
+  const paint = (announce) => {
+    state.online = typeof navigator === 'undefined' ? true : navigator.onLine;
+    document.body.classList.toggle('is-offline', !state.online);
+    if (!state.online) {
+      showNetBanner(
+        "You're offline. What you already opened still works — sending a booking or loading new data waits for a connection."
+      );
+    } else if (announce) {
+      showNetBanner('Back online. You can continue where you left off.', { online: true });
+      setTimeout(hideNetBanner, 3200);
+      toast('Back online.', 'success');
+    } else {
+      hideNetBanner();
+    }
+    const submit = document.querySelector('#booking-form button[type="submit"]');
+    if (submit) submit.disabled = !state.online || !state.cart.length;
+  };
+  window.addEventListener('offline', () => paint(true));
+  window.addEventListener('online', () => paint(true));
+  paint(false);
+}
+
+/**
+ * One dialog for the two states a page cannot recover from on its own: an ended
+ * session and a missing permission. Both explain the cause and offer a way out.
+ */
+function openStateModal({ icon = 'spark', title, message, primaryLabel, primaryAction, secondaryLabel, secondaryAction }) {
+  state.lastModalFocus = document.activeElement;
+  modalRoot.innerHTML = `
+    <div class="modal-overlay" data-modal-overlay>
+      <div class="modal state-modal" role="dialog" aria-modal="true" aria-labelledby="state-title">
+        <div class="modal-icon">${ICONS[icon] || ICONS.spark}</div>
+        <h2 id="state-title">${esc(title)}</h2>
+        <p>${esc(message)}</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" type="button" data-state-primary="${esc(primaryAction)}">${esc(primaryLabel)}</button>
+          ${
+            secondaryLabel
+              ? `<button class="btn" type="button" data-state-secondary="${esc(secondaryAction)}">${esc(secondaryLabel)}</button>`
+              : ''
+          }
+        </div>
+      </div>
+    </div>`;
+  revealLayer(modalRoot);
+  syncBodyLock();
+  modalRoot.querySelector('[data-state-primary]')?.focus();
+}
+
+/** Wires the global 401/403/slow signals raised by `api()` in api.js. */
+function setupSessionGuard() {
+  window.addEventListener('pm:session-expired', () => {
+    if (state.sessionEnded || !state.user) return;
+    state.sessionEnded = true;
+    saveBookingDraft();
+    openStateModal({
+      icon: 'logout',
+      title: 'Your session ended',
+      message:
+        'You were signed out to protect your account. Your unfinished booking is saved on this device — sign in again and we will put it back.',
+      primaryLabel: 'Sign in again',
+      primaryAction: 'signin',
+      secondaryLabel: 'Stay on this page',
+      secondaryAction: 'dismiss',
+    });
+  });
+  window.addEventListener('pm:forbidden', (event) => {
+    openStateModal({
+      icon: 'mail',
+      title: 'This needs different access',
+      message:
+        event.detail?.message ||
+        'Your account can use the rest of the dashboard, but not this part. Ask the studio owner to change your role if you need it.',
+      primaryLabel: 'Go back',
+      primaryAction: 'back',
+      secondaryLabel: 'Back to overview',
+      secondaryAction: 'overview',
+    });
+  });
+  window.addEventListener('pm:slow', showSlowNote);
+}
+
+/* ---------- Unsaved booking drafts ---------- */
+
+const DRAFT_KEY = 'pm.booking.draft';
+
+function saveBookingDraft() {
+  const form = document.getElementById('booking-form');
+  if (!form || !state.cart.length) return;
+  try {
+    sessionStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        cart: state.cart,
+        fields: Object.fromEntries(new FormData(form).entries()),
+        type: state.bookingType,
+        at: Date.now(),
+      })
+    );
+  } catch {
+    // Nothing to save without storage; the in-memory cart still survives.
+  }
+}
+
+function clearBookingDraft() {
+  try {
+    sessionStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** Puts a saved cart back, dropping any service retired since it was written. */
+function restoreBookingDraft() {
+  let draft = null;
+  try {
+    draft = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || 'null');
+  } catch {
+    draft = null;
+  }
+  if (!draft || !Array.isArray(draft.cart) || !draft.cart.length) return false;
+  const alive = new Set(state.services.map((service) => service.id));
+  state.cart = draft.cart.filter((item) => alive.has(item.service_id));
+  if (!state.cart.length) {
+    clearBookingDraft();
+    return false;
+  }
+  state.bookingType = draft.type === 'pickup' ? 'pickup' : 'event';
+  state.pendingDraft = draft.fields || null;
+  return true;
+}
+
+/** Fills the rendered form from a restored draft, once. */
+function applyDraftFields() {
+  if (!state.pendingDraft) return;
+  const form = document.getElementById('booking-form');
+  if (!form) return;
+  for (const [name, value] of Object.entries(state.pendingDraft)) {
+    const field = form.elements.namedItem(name);
+    if (field && typeof value === 'string' && !field.value) field.value = value;
+  }
+  state.pendingDraft = null;
+  toast('We restored your unfinished booking.', 'info');
+}
+
+let draftTimer;
+function scheduleDraftSave() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveBookingDraft, 600);
+}
+
+/* ---------- Inline form validation ---------- */
+
+/** Shows or clears the message directly under one field. */
+function setFieldError(field, message) {
+  const wrapper = field.closest('.field');
+  if (!wrapper) return;
+  let node = wrapper.querySelector('.field-error');
+  if (!message) {
+    field.classList.remove('invalid');
+    field.removeAttribute('aria-invalid');
+    if (node) node.remove();
+    return;
+  }
+  field.classList.add('invalid');
+  field.setAttribute('aria-invalid', 'true');
+  if (!node) {
+    node = document.createElement('span');
+    node.className = 'field-error';
+    wrapper.appendChild(node);
+  }
+  node.textContent = message;
+}
+
+function bookingFieldProblem(field) {
+  const value = String(field.value || '').trim();
+  switch (field.name) {
+    case 'branch_id':
+      // Required for a pickup; on an event the branch is optional (the studio
+      // routes by address), so an empty select is valid there.
+      if (state.bookingType !== 'pickup') return '';
+      return value ? '' : 'Choose the branch where you will pick up.';
+    case 'pickup_date':
+      if (!value) return 'Choose your pickup date.';
+      return value < todayISO() ? 'The pickup date cannot be in the past.' : '';
+    case 'event_date':
+      if (!value) return 'Choose your event date.';
+      return value < todayISO() ? 'The event date cannot be in the past.' : '';
+    case 'event_time':
+      return value ? '' : 'Choose the event start time.';
+    case 'venue':
+      return value.length >= 3 ? '' : 'Add the event venue, even a short name.';
+    case 'address':
+      return value.length >= 8 ? '' : 'Add the full address: house or venue, street, barangay, city.';
+    default:
+      return '';
+  }
+}
+
+/** Validates every field, shows each message, and returns the first problem. */
+function validateBookingForm(form) {
+  let first = null;
+  let message = '';
+  for (const field of form.querySelectorAll('input, select, textarea')) {
+    if (!field.name) continue;
+    const problem = bookingFieldProblem(field);
+    setFieldError(field, problem);
+    if (problem && !first) {
+      first = field;
+      message = problem;
+    }
+  }
+  if (first) {
+    first.focus();
+    first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  return message;
+}
+
+function clearFieldError(field) {
+  if (field?.classList?.contains('invalid')) setFieldError(field, '');
 }
 
 function showTemporaryPassword(name, email, temporary) {
@@ -1753,6 +2837,61 @@ function showTemporaryPassword(name, email, temporary) {
   revealLayer(modalRoot);
   syncBodyLock();
   modalRoot.querySelector('[data-modal-close]')?.focus();
+}
+
+/* ---------- Rate card dialog ---------- */
+
+function rateCardSkeleton() {
+  return `
+    <div class="rate-skeleton" aria-hidden="true">
+      ${'<span class="skeleton"></span>'.repeat(7)}
+    </div>
+    <p class="sr-only" role="status">Loading the rate card…</p>`;
+}
+
+/**
+ * Fetches the live catalog for the rate-card dialog. Shows a skeleton while it
+ * loads and an inline error with a retry button if it fails; the dialog stays
+ * open either way so the customer is never left staring at nothing.
+ */
+async function loadRateCard() {
+  const body = modalRoot.querySelector('[data-rate-body]');
+  if (!body) return;
+  body.setAttribute('aria-busy', 'true');
+  body.innerHTML = rateCardSkeleton();
+  try {
+    const catalog = await api('/api/services');
+    if (!body.isConnected) return;
+    body.innerHTML =
+      priceGroupsHtml(catalog) || '<p class="price-error">No prices are published yet. Please check back soon.</p>';
+  } catch {
+    if (!body.isConnected) return;
+    body.innerHTML = `
+      <div class="price-error">
+        <p>The rate card could not load. Check your connection and try again.</p>
+        <button class="btn btn-sm" type="button" data-rate-retry>Try again</button>
+      </div>`;
+  } finally {
+    body.removeAttribute('aria-busy');
+  }
+}
+
+/** Opens the rate-card dialog and starts loading it. */
+function openRateCard() {
+  state.lastModalFocus = document.activeElement;
+  modalRoot.innerHTML = `
+    <div class="modal-overlay" data-modal-overlay>
+      <div class="modal modal--rate" role="dialog" aria-modal="true" aria-labelledby="rate-title">
+        <button class="modal-close" type="button" data-modal-close aria-label="Close">${ICONS.close}</button>
+        <h2 id="rate-title">Rate card</h2>
+        <p class="modal-lead">Starting prices for prints, coverage and booths. The final quote depends on your date and location.</p>
+        <div class="rate-body" data-rate-body></div>
+      </div>
+    </div>`;
+  revealLayer(modalRoot);
+  syncBodyLock();
+  modalRoot.querySelector('[data-modal-close]')?.focus();
+  loadRateCard();
 }
 
 async function markAlertsRead() {
@@ -1849,6 +2988,8 @@ function updateAdminBookingsTable() {
 }
 
 /* ---------- Admin payments ---------- */
+
+/* ---------- Payments, reports, and alerts ---------- */
 
 function renderAdminPayments() {
   const active = activeBookings();
@@ -1957,6 +3098,716 @@ function reportBars(items, valueKey, labelKey, max) {
     .join('')}</div>`;
 }
 
+/** Shape-of-the-content placeholder, used instead of a spinner while a report builds. */
+function reportSkeleton() {
+  return `
+    <div class="view-skeleton">
+      <div class="view-skeleton-grid">
+        ${'<span class="skeleton skeleton-card"></span>'.repeat(4)}
+      </div>
+      <span class="skeleton skeleton-block"></span>
+    </div>
+    <p class="sr-only" role="status">Building your report from live records…</p>`;
+}
+
+/* ---------- Owner pricing console ---------- */
+
+async function loadPricing() {
+  state.pricingError = '';
+  try {
+    state.pricing = await api('/api/pricing');
+  } catch (error) {
+    state.pricingError = error.message;
+  }
+  renderView();
+}
+
+/* ---------- Shared product-image management ---------- */
+
+async function loadProductImages() {
+  state.imagesError = '';
+  try {
+    state.images = await api('/api/product-images');
+  } catch (error) {
+    state.imagesError = error.message;
+  }
+  renderView();
+}
+
+function imageStatus(service) {
+  if (!service.image_url) return { key: 'missing', label: 'Image needed' };
+  if (service.active === false) return { key: 'inactive', label: 'Inactive' };
+  if (service.catalog_visible === false) return { key: 'hidden', label: 'Hidden' };
+  return { key: 'published', label: 'Published' };
+}
+
+function renderAdminImages() {
+  if (state.imagesError) {
+    viewRoot.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">${ICONS.camera}</div>
+        <h3>Product images could not load</h3>
+        <p>${esc(state.imagesError)}</p>
+        <div class="no-results-actions"><button class="btn btn-primary" type="button" data-images-retry>Try again</button></div>
+      </div>`;
+    return;
+  }
+  if (!state.images) {
+    viewRoot.innerHTML = '<div class="view-skeleton" role="status" aria-live="polite">Loading the shared product catalog…</div>';
+    return;
+  }
+  const data = state.images;
+  const services = data.services || [];
+  const search = state.imageSearch.trim().toLowerCase();
+  const filtered = services.filter((service) => {
+    const status = imageStatus(service).key;
+    const matchesFilter =
+      state.imageFilter === 'all' ||
+      (state.imageFilter === 'missing' && status === 'missing') ||
+      (state.imageFilter === 'published' && status === 'published') ||
+      (state.imageFilter === 'hidden' && (status === 'hidden' || status === 'inactive'));
+    return (
+      matchesFilter &&
+      (!search || `${service.name} ${service.category} ${service.image_alt}`.toLowerCase().includes(search))
+    );
+  });
+  const categories = (data.categories || []).filter((category) =>
+    filtered.some((service) => service.category === category.name)
+  );
+  const recent = data.recent_changes || [];
+  const stats = data.stats || {};
+
+  viewRoot.innerHTML = `
+    <div class="page-intro">
+      <div><h2>The shared catalog, picture by picture</h2><p>Main Admin and Branch Admin changes apply to every customer screen. The previous image stays live until a replacement upload succeeds.</p></div>
+      <div class="page-actions"><a class="btn" href="/welcome#prices" target="_blank" rel="noopener">View public catalog</a></div>
+    </div>
+    <div class="stats-strip">
+      <div class="stat-cell"><span>All products</span><strong>${stats.total || services.length}</strong><small>Across every category</small></div>
+      <div class="stat-cell"><span>With an image</span><strong>${stats.with_image || 0}</strong><small>Approved and available</small></div>
+      <div class="stat-cell"><span>Image needed</span><strong class="${stats.missing ? 'rose' : ''}">${stats.missing || 0}</strong><small>Upload before publishing</small></div>
+      <div class="stat-cell"><span>Visible to customers</span><strong>${stats.visible || 0}</strong><small>Active and catalog-visible</small></div>
+    </div>
+    <div class="panel">
+      <div class="toolbar">
+        <div class="search-field">
+          ${ICONS.search}
+          <input type="search" id="image-search" placeholder="Search products or categories…" value="${esc(state.imageSearch)}" aria-label="Search product images" />
+        </div>
+        <select class="filter-select" id="image-filter" aria-label="Filter images">
+          <option value="all" ${state.imageFilter === 'all' ? 'selected' : ''}>All images</option>
+          <option value="missing" ${state.imageFilter === 'missing' ? 'selected' : ''}>Image needed</option>
+          <option value="published" ${state.imageFilter === 'published' ? 'selected' : ''}>Published</option>
+          <option value="hidden" ${state.imageFilter === 'hidden' ? 'selected' : ''}>Hidden or inactive</option>
+        </select>
+        <div class="toolbar-right"><span class="tiny muted">${plural(filtered.length, 'product')} shown</span></div>
+      </div>
+      ${
+        filtered.length
+          ? categories
+              .map((category) => {
+                const items = filtered.filter((service) => service.category === category.name);
+                return `<section class="image-admin-group">
+                  <div class="catalog-group-head"><h3>${esc(category.name)}</h3><p>${esc(category.note)}</p><span class="tiny muted">${plural(items.length, 'product')}</span></div>
+                  <div class="image-admin-grid">${items.map(imageAdminCard).join('')}</div>
+                </section>`;
+              })
+              .join('')
+          : noResultsState({
+              title: 'No products match this filter',
+              text: 'Clear the search or choose another image status.',
+            })
+      }
+    </div>
+    <div class="panel" style="margin-top:20px">
+      <div class="panel-head"><div><h3>Recent image changes</h3><p>Who changed which catalog image, and when</p></div></div>
+      ${
+        recent.length
+          ? `<div class="activity-list">${recent
+              .map(
+                (log) => `<div class="activity-item">
+                  <span class="workload-avatar">${esc(initials(log.actor_role === 'branch_admin' ? 'Branch admin' : 'Main admin'))}</span>
+                  <div class="activity-copy">
+                    <p><strong>${esc(log.metadata?.product || log.target_id || 'Product')}</strong></p>
+                    <span>${esc(String(log.action || '').replace('product_image.', '').replace('_', ' '))} · ${esc(log.actor_role || 'administrator')}</span>
+                    <small>${relativeTime(log.created_at)}</small>
+                  </div>
+                </div>`
+              )
+              .join('')}</div>`
+          : '<div class="table-empty">No image changes recorded yet.</div>'
+      }
+    </div>`;
+}
+
+function imageAdminCard(service) {
+  const status = imageStatus(service);
+  const selected = state.imageSelections.get(service.id);
+  return `
+    <article class="image-admin-card" data-image-card="${esc(service.id)}" data-search="${esc(`${service.name} ${service.category} ${service.image_alt || ''}`.toLowerCase())}">
+      <div class="image-admin-preview" data-image-local-preview>
+        ${selected ? `<img src="${esc(selected.url)}" alt="Preview of the selected ${esc(service.name)} image" />` : productImageMarkup(service)}
+        <span class="image-status image-status--${status.key}">${status.label}</span>
+      </div>
+      <div class="image-admin-body">
+        <div class="image-admin-title"><strong>${esc(service.name)}</strong><span>${esc(service.category)}</span></div>
+        <p class="tiny muted">${service.image_url ? `Current image · ${service.image_width || '?'} × ${service.image_height || '?'} px` : 'No approved image yet. Upload a real product photo or an accurate reference image.'}</p>
+        <label class="field image-alt-field"><span>Accessible description</span><input class="input" data-image-alt maxlength="180" value="${esc(service.image_alt || '')}" placeholder="e.g. Printed tarpaulin with metal grommets" /></label>
+        <div class="image-admin-actions">
+          <label class="btn btn-sm image-picker">
+            ${service.image_url ? 'Replace image' : 'Choose image'}
+            <input type="file" accept="image/jpeg,image/png,image/webp" data-image-input="${esc(service.id)}" hidden />
+          </label>
+          <button class="btn btn-sm btn-primary" type="button" data-image-save="${esc(service.id)}" ${selected ? '' : 'disabled'}>Save image</button>
+          ${service.image_url ? `<button class="btn btn-sm btn-danger" type="button" data-image-remove="${esc(service.id)}">Remove</button>` : ''}
+        </div>
+        <p class="tiny muted">JPG, PNG, or WEBP · 300 × 300 px minimum · 4 MB maximum. Preview before saving.</p>
+        <p class="form-error" data-image-message role="alert"></p>
+      </div>
+    </article>`;
+}
+
+function imageMessage(card, message) {
+  const box = card?.querySelector('[data-image-message]');
+  if (!box) return;
+  box.textContent = message;
+  box.classList.toggle('show', Boolean(message));
+}
+
+function clearImageSelection(id) {
+  const selected = state.imageSelections.get(id);
+  if (selected?.url) URL.revokeObjectURL(selected.url);
+  state.imageSelections.delete(id);
+}
+
+function previewImageSelection(input) {
+  const id = input.dataset.imageInput;
+  const card = input.closest('[data-image-card]');
+  const file = input.files?.[0];
+  if (!id || !card || !file) return;
+  imageMessage(card, '');
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    imageMessage(card, 'Choose a JPG, PNG, or WEBP image.');
+    input.value = '';
+    return;
+  }
+  if (file.size > 4 * 1024 * 1024) {
+    imageMessage(card, 'The image is larger than 4 MB. Choose a smaller file.');
+    input.value = '';
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  const probe = new Image();
+  probe.onload = () => {
+    if (probe.naturalWidth < 300 || probe.naturalHeight < 300) {
+      URL.revokeObjectURL(url);
+      imageMessage(card, 'The image must be at least 300 × 300 pixels.');
+      input.value = '';
+      return;
+    }
+    clearImageSelection(id);
+    state.imageSelections.set(id, { file, url });
+    const preview = card.querySelector('[data-image-local-preview]');
+    if (preview) {
+      const status = preview.querySelector('.image-status')?.outerHTML || '';
+      preview.innerHTML = `<img src="${esc(url)}" alt="Preview of the selected image" />${status}<span class="image-preview-label">Preview — not saved yet</span>`;
+    }
+    const save = card.querySelector('[data-image-save]');
+    if (save) save.disabled = false;
+  };
+  probe.onerror = () => {
+    URL.revokeObjectURL(url);
+    imageMessage(card, 'That file could not be read as an image.');
+    input.value = '';
+  };
+  probe.src = url;
+}
+
+async function saveProductImageFile(id, button) {
+  const selected = state.imageSelections.get(id);
+  const card = document.querySelector(`[data-image-card="${id}"]`);
+  if (!selected || !card) {
+    imageMessage(card, 'Choose an image to preview before saving.');
+    return;
+  }
+  const alt = card.querySelector('[data-image-alt]')?.value.trim() || '';
+  imageMessage(card, '');
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    const { service } = await api(`/api/services/${encodeURIComponent(id)}/image?alt=${encodeURIComponent(alt)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': selected.file.type },
+      body: selected.file,
+    });
+    replaceServiceInState(service);
+    clearImageSelection(id);
+    toast(`${service.name} image saved. The customer catalog is updated.`);
+    await loadProductImages();
+  } catch (error) {
+    imageMessage(card, error.message);
+    button.disabled = false;
+    button.textContent = 'Save image';
+  }
+}
+
+async function removeProductImageFile(id, button) {
+  const card = document.querySelector(`[data-image-card="${id}"]`);
+  if (!card) return;
+  if (button.dataset.armed !== 'true') {
+    button.dataset.armed = 'true';
+    button.textContent = 'Tap again to remove';
+    toast('Removing the image also hides this product from the customer catalog. Tap once more.', 'warning');
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Removing…';
+  try {
+    const { service } = await api(`/api/services/${encodeURIComponent(id)}/image`, { method: 'DELETE' });
+    replaceServiceInState(service);
+    clearImageSelection(id);
+    toast(`${service.name} image removed and the product hidden.`);
+    await loadProductImages();
+  } catch (error) {
+    imageMessage(card, error.message);
+    button.disabled = false;
+    button.textContent = 'Remove';
+    delete button.dataset.armed;
+  }
+}
+
+function applyImageSearch() {
+  const query = String(document.getElementById('image-search')?.value || '').trim().toLowerCase();
+  state.imageSearch = query;
+  document.querySelectorAll('[data-image-card]').forEach((card) => {
+    card.hidden = Boolean(query) && !String(card.dataset.search || '').includes(query);
+  });
+  document.querySelectorAll('.image-admin-group').forEach((group) => {
+    group.hidden = ![...group.querySelectorAll('[data-image-card]')].some((card) => !card.hidden);
+  });
+}
+
+function updateCartLine(index) {
+  const item = state.cart[index];
+  const node = document.querySelector(`.cart-line[data-cart-index="${index}"]`);
+  if (!item || !node) return;
+  const problem = measurementProblem(item);
+  const total = cartTotal(item);
+  const lineTotal = node.querySelector('[data-cart-line-total]');
+  if (lineTotal) lineTotal.textContent = total === null ? 'Check size' : peso(total);
+  const area = node.querySelector('[data-cart-area]');
+  if (area) {
+    area.textContent = problem
+      ? '—'
+      : `${billableArea(item).toFixed(2).replace(/\.00$/, '')} sq ${item.dimension_unit === 'in' ? 'in' : 'ft'}`;
+  }
+  const billed = node.querySelector('[data-cart-billed]');
+  if (billed) {
+    const dimensions = billedDimensions(item);
+    billed.textContent = problem
+      ? ''
+      : `Billed ${dimensions.width} × ${dimensions.height} ${item.dimension_unit === 'in' ? 'in' : 'ft'}`;
+  }
+  const error = node.querySelector('[data-cart-error]');
+  if (error) {
+    error.textContent = problem;
+    error.classList.toggle('show', Boolean(problem));
+  }
+  node.querySelectorAll('[data-cart-width], [data-cart-height]').forEach((input) => {
+    input.classList.toggle('invalid', Boolean(problem));
+  });
+  const totals = document.getElementById('cart-totals');
+  if (totals) totals.innerHTML = cartTotalsTemplate();
+  const submit = document.querySelector('#booking-form button[type="submit"]');
+  if (submit) {
+    submit.disabled =
+      state.cart.length === 0 || !state.online || cartGaps().length > 0 || cartMeasurementProblems().length > 0;
+  }
+}
+
+function categoryOptions(selected) {
+  const categories = state.pricing?.categories || state.categories || [];
+  return categories
+    .map(
+      (category) =>
+        `<option value="${esc(category.name)}" ${category.name === selected ? 'selected' : ''}>${esc(category.name)}</option>`
+    )
+    .join('');
+}
+
+function availabilityOptions(selected) {
+  const value = selected || 'unassigned';
+  return AVAILABILITY_OPTIONS.map(
+    (option) => `<option value="${option.value}" ${option.value === value ? 'selected' : ''}>${option.label}</option>`
+  ).join('');
+}
+
+/** One editable price-break row inside a product form. */
+function tierRowEditor(row = {}) {
+  return `
+    <div class="price-tier-row" data-tier-row>
+      <input class="input" type="number" min="1" step="1" value="${row.min ?? ''}" data-tier-min aria-label="Minimum quantity" placeholder="Min" />
+      <span class="tiny muted">to</span>
+      <input class="input" type="number" min="1" step="1" value="${row.max ?? ''}" data-tier-max aria-label="Maximum quantity" placeholder="∞" />
+      <input class="input" type="number" min="0" step="0.01" value="${row.price ?? ''}" data-tier-price aria-label="Price per unit" placeholder="Price" />
+      <input class="input" type="text" maxlength="80" value="${esc(row.label || '')}" data-tier-label aria-label="Price-break label" placeholder="Label" />
+      <button class="btn btn-sm" type="button" data-remove-tier aria-label="Remove price break">×</button>
+    </div>`;
+}
+
+function priceTierRows(service) {
+  return (service.tiers || []).map((row) => tierRowEditor(row)).join('');
+}
+
+/** Shared fields for the edit card and the new-product form. */
+function serviceEditorFields(service) {
+  const value = (key, fallback = '') => (service[key] === null || service[key] === undefined ? fallback : service[key]);
+  const checked = (key) => (service[key] === true ? 'checked' : '');
+  return `
+    <div class="price-field-grid">
+      <label class="field"><span class="tiny muted">Product name</span><input class="input" data-field="name" maxlength="80" value="${esc(value('name'))}" required /></label>
+      <label class="field"><span class="tiny muted">Category</span><select class="select" data-field="category">${categoryOptions(service.category)}</select></label>
+    </div>
+    <label class="field"><span class="tiny muted">Description</span><textarea class="textarea" data-field="description" maxlength="500" rows="2">${esc(value('description'))}</textarea></label>
+    <div class="price-field-grid">
+      <label class="field"><span class="tiny muted">Price (₱)</span><input class="input" type="number" min="0" step="0.01" data-field="price" value="${value('price')}" required /></label>
+      <label class="field"><span class="tiny muted">Unit</span><input class="input" data-field="unit" maxlength="40" value="${esc(value('unit', 'per piece'))}" required /></label>
+      <label class="field"><span class="tiny muted">Pricing type</span><select class="select" data-field="pricing_mode"><option value="fixed" ${value('pricing_mode', 'fixed') === 'fixed' ? 'selected' : ''}>Fixed</option><option value="area" ${value('pricing_mode') === 'area' ? 'selected' : ''}>Per area</option></select></label>
+      <label class="field"><span class="tiny muted">Dimension unit</span><select class="select" data-field="dimension_unit"><option value="ft" ${value('dimension_unit', 'ft') === 'ft' ? 'selected' : ''}>Feet</option><option value="in" ${value('dimension_unit') === 'in' ? 'selected' : ''}>Inches</option></select></label>
+      <label class="field"><span class="tiny muted">Minimum order qty</span><input class="input" type="number" min="1" step="1" data-field="min_qty" value="${value('min_qty')}" /></label>
+      <label class="field"><span class="tiny muted">Minimum area</span><input class="input" type="number" min="0" step="0.01" data-field="min_area" value="${value('min_area')}" /></label>
+      <label class="field"><span class="tiny muted">Minimum dimension (${value('dimension_unit', 'ft')})</span><input class="input" type="number" min="0.01" step="0.01" data-field="min_dimension" value="${value('min_dimension')}" /></label>
+      <label class="field"><span class="tiny muted">Maximum dimension (${value('dimension_unit', 'ft')})</span><input class="input" type="number" min="0.01" step="0.01" data-field="max_dimension" value="${value('max_dimension')}" /></label>
+      <label class="field"><span class="tiny muted">Additional charge (₱)</span><input class="input" type="number" min="0" step="0.01" data-field="base_fee" value="${value('base_fee', 0)}" /></label>
+      <label class="field"><span class="tiny muted">Booking availability</span><select class="select" data-field="booking_availability">${availabilityOptions(service.booking_availability)}</select></label>
+    </div>
+    <div class="price-toggle-row">
+      <label><input type="checkbox" data-field="active" ${service.active !== false ? 'checked' : ''} /> Active</label>
+      <label><input type="checkbox" data-field="addon" ${checked('addon')} /> Add-on</label>
+      <label><input type="checkbox" data-field="capacity" ${checked('capacity')} /> Uses capacity slot</label>
+      <label><input type="checkbox" data-field="popular" ${checked('popular')} /> Popular</label>
+      <label><input type="checkbox" data-field="needs_review" ${checked('needs_review')} /> Needs review</label>
+      <label><input type="checkbox" data-field="round_dimensions_up" ${checked('round_dimensions_up')} /> Round measurements up</label>
+      <label><input type="checkbox" data-field="catalog_visible" ${service.catalog_visible !== false ? 'checked' : ''} /> Visible in customer catalog</label>
+    </div>
+    <label class="field"><span class="tiny muted">Review note</span><input class="input" data-field="review_note" maxlength="300" value="${esc(value('review_note'))}" /></label>
+    <div class="price-tier-editor">
+      <div class="price-tier-head">
+        <div><strong>Quantity price breaks</strong><span class="tiny muted">Optional. Leave empty for one fixed price.</span></div>
+        <button class="btn btn-sm" type="button" data-add-tier>+ Add break</button>
+      </div>
+      <div class="price-tier-list" data-tier-list>${priceTierRows(service)}</div>
+    </div>`;
+}
+
+function priceServiceForm(service) {
+  return `
+    <form class="price-edit" data-price-form data-id="${esc(service.id)}">
+      <details ${service.needs_review ? 'open' : ''}>
+        <summary class="price-edit-head">
+          <div>
+            <strong>${esc(service.name)}</strong>
+            <span class="tiny muted">${esc(service.unit)}${service.min_qty ? ` · min ${service.min_qty}` : ''} · ${esc(AVAILABILITY_LABELS[service.booking_availability] || AVAILABILITY_LABELS.unassigned)}</span>
+          </div>
+          <span class="price-card-status">${
+            service.active === false
+              ? 'Disabled'
+              : !service.image_url
+                ? 'Image needed'
+                : service.catalog_visible === false
+                  ? 'Hidden'
+                  : service.needs_review
+                    ? 'Needs review'
+                    : 'Active'
+          }</span>
+        </summary>
+        <div class="price-edit-body">
+          <div class="price-image-note ${service.image_url ? 'has-image' : ''}">
+            <span class="price-image-thumb">${productImageMarkup(service)}</span>
+            <div>
+              <strong>${service.image_url ? 'Product image ready' : 'Image required before publishing'}</strong>
+              <span>${service.image_url ? `Updated ${service.image_updated_at ? formatDateTime(service.image_updated_at) : 'by an administrator'}` : 'Upload a real photo or an accurate reference image in Product images.'}</span>
+            </div>
+            <button class="btn btn-sm" type="button" data-nav="images">Manage image</button>
+          </div>
+          ${serviceEditorFields(service)}
+          <div class="price-edit-actions">
+            <span class="tiny muted">Updated ${service.updated_at ? formatDateTime(service.updated_at) : '—'}</span>
+            <button class="btn btn-sm" type="submit">Save product</button>
+          </div>
+          <p class="form-error" data-price-message role="alert"></p>
+        </div>
+      </details>
+    </form>`;
+}
+
+function newServiceForm() {
+  const blank = {
+    name: '',
+    category: state.pricing?.categories?.[0]?.name || '',
+    description: '',
+    price: '',
+    unit: 'per piece',
+    pricing_mode: 'fixed',
+    min_area: null,
+    min_qty: null,
+    tiers: [],
+    base_fee: 0,
+    dimension_unit: 'ft',
+    round_dimensions_up: false,
+    min_dimension: null,
+    max_dimension: null,
+    catalog_visible: false,
+    booking_availability: 'unassigned',
+    active: true,
+    addon: false,
+    capacity: false,
+    popular: false,
+    needs_review: false,
+    review_note: '',
+  };
+  return `
+    <form id="new-service-form" class="price-edit price-new" novalidate>
+      ${serviceEditorFields(blank)}
+      <div class="price-edit-actions">
+        <span class="tiny muted">New products are saved to the database immediately.</span>
+        <button class="btn btn-primary" type="submit">Create product</button>
+      </div>
+      <p class="form-error" data-new-service-message role="alert"></p>
+    </form>`;
+}
+
+/**
+ * The owner's product and price console. Every row is editable in place; the
+ * client-specific rates stay read-only here and never enter a booking total.
+ */
+function renderAdminPricing() {
+  if (state.pricingError) {
+    viewRoot.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">${ICONS.payments}</div>
+        <h3>The price list could not load</h3>
+        <p>${esc(state.pricingError)}</p>
+        <div class="no-results-actions"><button class="btn btn-primary" type="button" data-pricing-retry>Try again</button></div>
+      </div>`;
+    return;
+  }
+  if (!state.pricing) {
+    viewRoot.innerHTML = '<div class="view-skeleton" role="status" aria-live="polite">Loading the studio price list…</div>';
+    return;
+  }
+  const data = state.pricing;
+  const services = data.services || [];
+  const activeServices = services.filter((service) => service.active !== false);
+  const missingImages = services.filter((service) => !service.image_url).length;
+  const clients = data.client_prices || [];
+  const flagged = services.filter((service) => service.needs_review);
+  const openIds = new Set(flagged.map((service) => service.id));
+  const reviews = (data.reviews || []).filter((review) => !review.service_id || openIds.has(review.service_id));
+  const counts = { pickup: 0, event: 0, both: 0, unassigned: 0 };
+  services.filter((service) => service.active !== false).forEach((service) => {
+    const availability = service.booking_availability || 'unassigned';
+    counts[availability] = (counts[availability] || 0) + 1;
+  });
+
+  viewRoot.innerHTML = `
+    <div class="page-intro">
+      <div><h2>Products, prices, and availability</h2><p>Changes here are read by the catalog, booking form, assistant, checkout, and rate card. Existing bookings keep the price they were booked at.</p></div>
+      <div class="page-actions">
+        <button class="btn btn-primary" type="button" data-new-service>${state.newProductOpen ? 'Close form' : '+ Add product'}</button>
+        <button class="btn" type="button" data-nav="images">Product images${missingImages ? ` · ${missingImages} needed` : ''}</button>
+        <a class="btn" href="/welcome#prices" target="_blank" rel="noopener">View public rate card</a>
+      </div>
+    </div>
+    <div class="stats-strip">
+      <div class="stat-cell"><span>All products</span><strong>${services.length}</strong><small>${activeServices.length} active · ${missingImages} image needed</small></div>
+      <div class="stat-cell"><span>Pickup</span><strong>${counts.pickup + counts.both}</strong><small>${counts.pickup} pickup-only · ${counts.both} both</small></div>
+      <div class="stat-cell"><span>Event booking</span><strong>${counts.event + counts.both}</strong><small>${counts.event} event-only · ${counts.both} both</small></div>
+      <div class="stat-cell"><span>Unassigned</span><strong class="${counts.unassigned ? 'rose' : ''}">${counts.unassigned}</strong><small>Hidden until configured</small></div>
+      <div class="stat-cell"><span>Client rates</span><strong>${clients.length}</strong><small>Admin only</small></div>
+    </div>
+
+    ${
+      state.newProductOpen
+        ? `<div class="panel" style="margin-bottom:20px">
+            <div class="panel-head"><div><h3>Add a product or service</h3><p>It is saved to the database immediately. A duplicate name is refused.</p></div></div>
+            ${newServiceForm()}
+          </div>`
+        : ''
+    }
+
+    <div class="panel">
+      <div class="panel-head"><div><h3>Needs owner confirmation</h3><p>Conflicting workbook values, ranges, and services not on the 2026 sheet. Each row shows what the system applied.</p></div></div>
+      ${
+        reviews.length
+          ? `<div class="review-list">${reviews
+              .map(
+                (review) => `
+                <div class="review-row">
+                  <div><strong>${esc(review.product)}</strong><span>${esc(review.issue)}</span></div>
+                  <span class="tiny">Applied: ${esc(review.applied)}</span>
+                </div>`
+              )
+              .join('')}</div>`
+          : '<div class="table-empty">Nothing is waiting for confirmation.</div>'
+      }
+      <p class="tiny muted">Uncheck “Needs review” on a product once you have confirmed its price. Existing bookings keep their recorded price.</p>
+    </div>
+
+    <div class="panel" style="margin-top:20px">
+      <div class="panel-head"><div><h3>All products and services</h3><p>Open a product to edit its name, category, price, unit, minimum, price breaks, additional charge, availability, or status.</p></div><span class="tiny muted">${plural(services.length, 'product')}</span></div>
+      ${(data.categories || [])
+        .map((category) => {
+          const items = services.filter((service) => service.category === category.name);
+          if (!items.length) return '';
+          return `<section class="pricing-group">
+            <div class="catalog-group-head"><h3>${esc(category.name)}</h3><p>${esc(category.note)}</p><span class="tiny muted">${plural(items.length, 'product')}</span></div>
+            <div class="price-edit-grid">${items.map(priceServiceForm).join('')}</div>
+          </section>`;
+        })
+        .join('')}
+    </div>
+
+    <div class="panel" style="margin-top:20px">
+      <div class="panel-head"><div><h3>${esc(data.client_category?.name || 'Special Client Pricing')}</h3><p>${esc(data.client_category?.note || '')}</p></div><span class="tiny muted">${plural(clients.length, 'client rate')}</span></div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Client</th><th>Rate</th><th>Unit</th></tr></thead>
+        <tbody>${clients
+          .map(
+            (row) => `<tr><td><span class="cell-main">${esc(row.client)}</span></td><td><span class="cell-money">${peso(row.price)}</span></td><td>${esc(row.unit)}</td></tr>`
+          )
+          .join('')}</tbody>
+      </table></div>
+      <div class="table-foot"><span>Client rates never overwrite retail prices.</span><span>Admin only</span></div>
+    </div>`;
+}
+
+/** Reads every editable product field, including the optional price breaks. */
+function serviceFormPayload(form) {
+  const read = (name) => form.querySelector(`[data-field="${name}"]`);
+  const numberOrNull = (name) => {
+    const field = read(name);
+    if (!field || field.value.trim() === '') return null;
+    return Number(field.value);
+  };
+  const tiers = [...form.querySelectorAll('[data-tier-row]')]
+    .map((row) => {
+      const minText = row.querySelector('[data-tier-min]')?.value.trim() || '';
+      const maxText = row.querySelector('[data-tier-max]')?.value.trim() || '';
+      const priceText = row.querySelector('[data-tier-price]')?.value.trim() || '';
+      const label = row.querySelector('[data-tier-label]')?.value.trim() || '';
+      if (!minText && !priceText && !label) return null;
+      return {
+        min: Number(minText),
+        max: maxText === '' ? null : Number(maxText),
+        price: Number(priceText),
+        label,
+      };
+    })
+    .filter(Boolean);
+  return {
+    name: read('name')?.value.trim() || '',
+    category: read('category')?.value || '',
+    description: read('description')?.value.trim() || '',
+    price: Number(read('price')?.value || 0),
+    unit: read('unit')?.value.trim() || '',
+    pricing_mode: read('pricing_mode')?.value || 'fixed',
+    min_area: numberOrNull('min_area'),
+    min_qty: numberOrNull('min_qty'),
+    tiers,
+    base_fee: Number(read('base_fee')?.value || 0),
+    dimension_unit: read('dimension_unit')?.value || 'ft',
+    round_dimensions_up: Boolean(read('round_dimensions_up')?.checked),
+    min_dimension: numberOrNull('min_dimension'),
+    max_dimension: numberOrNull('max_dimension'),
+    catalog_visible: Boolean(read('catalog_visible')?.checked),
+    booking_availability: read('booking_availability')?.value || 'unassigned',
+    active: Boolean(read('active')?.checked),
+    addon: Boolean(read('addon')?.checked),
+    capacity: Boolean(read('capacity')?.checked),
+    popular: Boolean(read('popular')?.checked),
+    needs_review: Boolean(read('needs_review')?.checked),
+    review_note: read('review_note')?.value.trim() || '',
+  };
+}
+
+function replaceServiceInState(service) {
+  if (state.pricing) {
+    const exists = state.pricing.services.some((row) => row.id === service.id);
+    state.pricing.services = exists
+      ? state.pricing.services.map((row) => (row.id === service.id ? service : row))
+      : [...state.pricing.services, service];
+    state.pricing.services.sort((a, b) => (a.sort || 0) - (b.sort || 0));
+  }
+  // `state.services` mirrors the public catalog. A hidden or inactive product
+  // remains available in the image/pricing consoles but drops out of this list.
+  const publiclyVisible = service.active !== false && service.catalog_visible !== false;
+  const exists = state.services.some((row) => row.id === service.id);
+  if (publiclyVisible) {
+    state.services = exists
+      ? state.services.map((row) => (row.id === service.id ? service : row))
+      : [...state.services, service];
+  } else {
+    state.services = state.services.filter((row) => row.id !== service.id);
+  }
+  state.services.sort((a, b) => (a.sort || 0) - (b.sort || 0));
+  if (state.images) {
+    const imageExists = state.images.services.some((row) => row.id === service.id);
+    state.images.services = imageExists
+      ? state.images.services.map((row) => (row.id === service.id ? service : row))
+      : [...state.images.services, service];
+  }
+}
+
+/** Saves one existing product; the server re-validates every field. */
+async function saveServicePrice(form) {
+  const id = form.dataset.id;
+  const button = form.querySelector('button[type="submit"]');
+  const message = form.querySelector('[data-price-message]');
+  message.textContent = '';
+  message.classList.remove('show');
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    const { service } = await api(`/api/services/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(serviceFormPayload(form)),
+    });
+    replaceServiceInState(service);
+    toast(`${service.name} updated.`);
+    renderView();
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add('show');
+    button.disabled = false;
+    button.textContent = 'Save product';
+  }
+}
+
+async function saveNewService(form) {
+  const button = form.querySelector('button[type="submit"]');
+  const message = form.querySelector('[data-new-service-message]');
+  message.textContent = '';
+  message.classList.remove('show');
+  button.disabled = true;
+  button.textContent = 'Creating…';
+  try {
+    const { service } = await api('/api/services', {
+      method: 'POST',
+      body: JSON.stringify(serviceFormPayload(form)),
+    });
+    replaceServiceInState(service);
+    state.newProductOpen = false;
+    toast(`${service.name} created. Upload its product image before it appears in the customer catalog.`);
+    renderView();
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add('show');
+    button.disabled = false;
+    button.textContent = 'Create product';
+  }
+}
+
 function renderReports() {
   const csvHref = `/api/reports.csv?from=${encodeURIComponent(state.reportFrom)}&to=${encodeURIComponent(state.reportTo)}`;
   const report = state.report;
@@ -1982,11 +3833,14 @@ function renderReports() {
         </div>
         <button class="btn btn-primary" type="submit" ${state.reportLoading ? 'disabled' : ''}>${state.reportLoading ? 'Generating…' : 'Generate report'}</button>
         <span class="report-meta">${report ? `Last generated ${formatDateTime(report.period.generated_at)}` : 'Generated on demand from live records'}</span>
-        <div class="form-error ${state.reportError ? 'show' : ''}" role="alert" style="flex-basis:100%">${esc(state.reportError)}</div>
+        <div class="form-error ${state.reportError ? 'show' : ''}" role="alert" style="flex-basis:100%">
+          ${esc(state.reportError)}
+          ${state.reportError ? '<button class="btn btn-sm" type="button" data-report-retry>Try again</button>' : ''}
+        </div>
       </form>
       ${
         state.reportLoading && !report
-          ? '<div class="load-screen"><span class="spinner" aria-hidden="true"></span> Adding up the moments...</div>'
+          ? reportSkeleton()
           : report
             ? `
             <div class="report-generated">
@@ -2091,18 +3945,30 @@ function renderReports() {
 
 /* ---------- Drawer ---------- */
 
+/* ---------- Drawer and modal templates ---------- */
+
 function drawerItemsTemplate(booking) {
   return (booking.items || [])
     .map(
-      (item) => `
+      (item) => {
+        const unit = item.dimension_unit === 'in' ? 'in' : 'ft';
+        const billed =
+          item.pricing_mode === 'area' &&
+          item.billed_width_ft !== undefined &&
+          (Number(item.billed_width_ft) !== Number(item.width_ft) ||
+            Number(item.billed_height_ft) !== Number(item.height_ft))
+            ? ` · billed ${Number(item.billed_width_ft)} × ${Number(item.billed_height_ft)} ${unit}`
+            : '';
+        return `
       <div class="drawer-item">
         <span>${esc(item.name)}<small>${
           item.pricing_mode === 'area'
-            ? `${item.width_ft} × ${item.height_ft} ft · ${item.area_sqft} sq ft`
-            : `${item.qty} × ${peso(item.unit_price)} · ${esc(item.unit)}`
+            ? `${Number(item.width_ft)} × ${Number(item.height_ft)} ${unit}${billed} · ${Number(item.area_sqft)} sq ${unit} · ${peso(item.unit_price)} / sq ${unit}${item.base_fee ? ` + ${peso(item.base_fee)} setup` : ''}`
+            : `${item.qty} × ${peso(item.unit_price)}${item.tier_label ? ` (${esc(item.tier_label)})` : ''} · ${esc(item.unit)}`
         }</small></span>
         <strong>${peso(item.line_total)}</strong>
-      </div>`
+      </div>`;
+      }
     )
     .join('');
 }
@@ -2370,6 +4236,10 @@ function drawerTemplate(booking) {
 
 /* ---------- Motion helpers ---------- */
 
+/* ---------- Motion: layers, view transitions, and row staggering ---------- */
+
+// Users who ask their system to reduce motion get the same content with no
+// entrance animation; nothing is hidden behind an animation that never runs.
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 // Layers are injected closed, then opened on the next frame so the CSS
@@ -2415,11 +4285,24 @@ function runViewTransition(direction = 1) {
   viewRoot.classList.add('view-enter');
   clearTimeout(runViewTransition.timer);
   runViewTransition.timer = setTimeout(() => viewRoot.classList.remove('view-enter', 'from-back'), 620);
+
+  // The page title changes immediately with the route; a short settle keeps
+  // the header from feeling like it was swapped in a single frame.
+  const meta = document.querySelector('.topbar-left');
+  if (meta) {
+    meta.classList.remove('meta-enter');
+    void meta.offsetWidth;
+    meta.classList.add('meta-enter');
+    clearTimeout(runViewTransition.metaTimer);
+    runViewTransition.metaTimer = setTimeout(() => meta.classList.remove('meta-enter'), 420);
+  }
 }
 
 // Stagger the first rows of each collection so a fresh view settles in order.
 function primeRows() {
-  const groups = viewRoot.querySelectorAll('.data-table tbody, .booking-list, .account-list, .activity-list');
+  const groups = viewRoot.querySelectorAll(
+    '.data-table tbody, .booking-list, .account-list, .activity-list, .catalog-group, .report-table tbody, .bar-list, .workload-list, .report-summary'
+  );
   groups.forEach((group) => {
     const rows = Array.from(group.children).slice(0, 12);
     if (rows.length < 2) return;
@@ -2449,6 +4332,8 @@ function closeAssistant() {
   else setTimeout(finish, 240);
 }
 
+/* ---------- Opening and closing records ---------- */
+
 function renderDrawer(booking, scroll = 0) {
   const wasOpen = Boolean(drawerRoot.firstElementChild);
   // The loading skeleton is already mounted, so the first real render still
@@ -2463,10 +4348,12 @@ function renderDrawer(booking, scroll = 0) {
   if (body) body.scrollTop = scroll;
 }
 
+/**
+ * Opens a booking in the drawer. The list row already holds enough data to draw
+ * immediately; the fetch refreshes it so the timeline and payments are current.
+ */
 async function openBooking(id) {
-  state.lastFocused = document.activeElement;
-  state.cancelArmed = false;
-  state.drawerOpening = true;
+  state.lastFocused = document.activeElement;    state.drawerOpening = true;
   drawerRoot.innerHTML = `
     <div class="drawer-overlay">
       <div class="drawer" role="dialog" aria-modal="true" aria-label="Booking details">
@@ -2491,7 +4378,6 @@ async function openBooking(id) {
 
 function closeDrawer({ restoreFocus = true } = {}) {
   state.activeBooking = null;
-  state.cancelArmed = false;
   unmountLayer(drawerRoot);
   if (restoreFocus && state.lastFocused instanceof HTMLElement) state.lastFocused.focus();
 }
@@ -2506,6 +4392,10 @@ function syncBodyLock() {
   document.body.classList.toggle('no-scroll', locked);
 }
 
+/**
+ * Replaces one booking in `state` and re-renders, keeping the drawer's scroll
+ * position. Used after an edit, a payment, or a cancellation.
+ */
 function refreshAfterBooking(booking) {
   const index = state.bookings.findIndex((item) => item.id === booking.id);
   if (index >= 0) state.bookings[index] = booking;
@@ -2618,10 +4508,12 @@ document.addEventListener('click', async (event) => {
 
   if (target.closest('[data-open-sidebar]')) {
     document.body.classList.add('sidebar-open');
+    document.querySelector('[data-open-sidebar]')?.setAttribute('aria-expanded', 'true');
     return;
   }
   if (target.closest('[data-close-sidebar]')) {
     document.body.classList.remove('sidebar-open');
+    document.querySelector('[data-open-sidebar]')?.setAttribute('aria-expanded', 'false');
     return;
   }
   if (target.closest('[data-logout]')) {
@@ -2668,6 +4560,64 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  if (target.closest('[data-new-service]')) {
+    state.newProductOpen = !state.newProductOpen;
+    renderView();
+    return;
+  }
+
+  const detailsButton = target.closest('[data-product-details]');
+  if (detailsButton) {
+    openProductDetails(detailsButton.dataset.productDetails);
+    return;
+  }
+
+  const selectButton = target.closest('[data-select-service]');
+  if (selectButton) {
+    const id = selectButton.dataset.selectService;
+    if (modalRoot.children.length) closeModal({ restoreFocus: false });
+    selectService(id);
+    return;
+  }
+
+  const mediaButton = target.closest('.product-card-media[data-product-image]');
+  if (mediaButton) {
+    openProductLightbox(mediaButton.dataset.productImage);
+    return;
+  }
+
+  const imageSaveButton = target.closest('[data-image-save]');
+  if (imageSaveButton) {
+    await saveProductImageFile(imageSaveButton.dataset.imageSave, imageSaveButton);
+    return;
+  }
+
+  const imageRemoveButton = target.closest('[data-image-remove]');
+  if (imageRemoveButton) {
+    await removeProductImageFile(imageRemoveButton.dataset.imageRemove, imageRemoveButton);
+    return;
+  }
+
+  if (target.closest('[data-images-retry]')) {
+    state.images = null;
+    state.imagesError = '';
+    loadProductImages();
+    return;
+  }
+
+  const addTier = target.closest('[data-add-tier]');
+  if (addTier) {
+    const list = addTier.closest('form')?.querySelector('[data-tier-list]');
+    if (list) list.insertAdjacentHTML('beforeend', tierRowEditor());
+    return;
+  }
+
+  const removeTier = target.closest('[data-remove-tier]');
+  if (removeTier) {
+    removeTier.closest('[data-tier-row]')?.remove();
+    return;
+  }
+
   const catalog = target.closest('[data-catalog]');
   if (catalog) {
     state.catalogFilter = catalog.dataset.catalog;
@@ -2683,14 +4633,36 @@ document.addEventListener('click', async (event) => {
   if (typeButton) {
     const nextType = typeButton.dataset.bookingType === 'pickup' ? 'pickup' : 'event';
     if (nextType === state.bookingType) return;
+    const removed = state.cart.filter((item) => {
+      const service = state.services.find((row) => row.id === item.service_id);
+      return !service || !serviceSupportsBookingType(service, nextType);
+    });
+    state.cart = state.cart.filter((item) => {
+      const service = state.services.find((row) => row.id === item.service_id);
+      return service && serviceSupportsBookingType(service, nextType);
+    });
     state.bookingType = nextType;
     state.availability = null;
+    state.typeNotice = removed.length
+      ? `Removed ${removed.map((item) => item.name).join(', ')} because ${
+          removed.length === 1 ? 'it is' : 'they are'
+        } not available for ${nextType === 'pickup' ? 'pickup' : 'event'} bookings.`
+      : '';
     document.querySelectorAll('[data-booking-type]').forEach((button) => {
       button.classList.toggle('active', button.dataset.bookingType === state.bookingType);
     });
+    const tabs = document.getElementById('catalog-tabs');
+    if (tabs) tabs.innerHTML = catalogTabsTemplate();
+    const catalog = document.getElementById('catalog-body');
+    if (catalog) catalog.innerHTML = catalogBodyTemplate();
     const fields = document.getElementById('booking-fields');
     if (fields) fields.innerHTML = bookingFieldsTemplate();
+    syncCart();
     renderAvailabilityNote();
+    renderTypeNotice();
+    if (removed.length) {
+      toast(`${removed.length === 1 ? 'One item was' : `${removed.length} items were`} removed for this booking type.`, 'warning');
+    }
     if (state.bookingType === 'pickup') suggestPickupBranch();
     return;
   }
@@ -2859,26 +4831,97 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  if (target.closest('[data-assistant-open]')) {
+    openAssistant();
+    return;
+  }
+  if (target.closest('[data-rate-card]')) {
+    openRateCard();
+    return;
+  }
+  if (target.closest('[data-rate-retry]')) {
+    loadRateCard();
+    return;
+  }
   if (target.closest('[data-assistant-toggle]')) {
     const panel = document.getElementById('assistant-panel');
     if (!panel) return;
-    if (panel.hidden) {
-      delete panel.dataset.closing;
-      panel.classList.remove('is-closing');
-      panel.hidden = false;
-      renderAssistantLog();
-      requestAnimationFrame(() => panel.classList.add('is-open'));
-      document.querySelector('[data-assistant-toggle]')?.setAttribute('aria-expanded', 'true');
-      document.getElementById('assistant-input')?.focus();
-    } else {
-      closeAssistant();
-    }
+    if (panel.hidden) openAssistant();
+    else closeAssistant();
     return;
   }
   if (target.closest('[data-assistant-close]')) {
     closeAssistant();
     return;
   }
+  if (target.closest('[data-assistant-minimize]')) {
+    minimizeAssistant();
+    return;
+  }
+  if (target.closest('[data-assistant-lang]')) {
+    toggleAssistantLang();
+    return;
+  }
+  if (target.closest('[data-assistant-suggest]')) {
+    const question = target.closest('[data-assistant-suggest]').dataset.assistantSuggest || '';
+    sendAssistant(question);
+    return;
+  }
+  if (target.closest('[data-assistant-retry]')) {
+    const retry = state.chatRetry;
+    state.chatRetry = '';
+    sendAssistant(retry);
+    return;
+  }
+  if (target.closest('[data-state-primary]')) {
+    const action = target.closest('[data-state-primary]').dataset.statePrimary;
+    if (action === 'signin') {
+      window.location.href = `/login?next=${encodeURIComponent(`/app#${state.view}`)}&expired=1`;
+      return;
+    }
+    if (action === 'back') {
+      closeModal();
+      if (window.history.length > 1) window.history.back();
+      else navigate('overview');
+      return;
+    }
+    closeModal();
+    return;
+  }
+  if (target.closest('[data-state-secondary]')) {
+    const action = target.closest('[data-state-secondary]').dataset.stateSecondary;
+    closeModal();
+    if (action === 'overview') navigate('overview');
+    return;
+  }
+  if (target.closest('[data-clear-search]')) {
+    state.adminSearch = '';
+    state.adminStatus = 'all';
+    renderView();
+    return;
+  }
+  if (target.closest('[data-use-suggestion]')) {
+    state.adminSearch = target.closest('[data-use-suggestion]').dataset.useSuggestion || '';
+    renderView();
+    return;
+  }
+  if (target.closest('[data-report-retry]')) {
+    loadReport();
+    return;
+  }
+  if (target.closest('[data-pricing-retry]')) {
+    state.pricing = null;
+    state.pricingError = '';
+    loadPricing();
+    return;
+  }
+});
+
+document.addEventListener('dblclick', (event) => {
+  const image = event.target.closest('[data-product-image]');
+  if (!image) return;
+  event.preventDefault();
+  openProductLightbox(image.dataset.productImage);
 });
 
 document.addEventListener('change', (event) => {
@@ -2888,10 +4931,20 @@ document.addEventListener('change', (event) => {
     const index = Number(target.dataset.cartWidth ?? target.dataset.cartHeight);
     const item = state.cart[index];
     if (!item) return;
-    const value = Math.min(50, Math.max(0.5, Number(target.value) || 0.5));
-    if (target.matches('[data-cart-width]')) item.width_ft = value;
-    else item.height_ft = value;
-    syncCart();
+    if (target.matches('[data-cart-width]')) item.width_ft = target.value;
+    else item.height_ft = target.value;
+    updateCartLine(index);
+    return;
+  }
+
+  if (target.matches('[data-image-input]')) {
+    previewImageSelection(target);
+    return;
+  }
+
+  if (target.matches('#image-filter')) {
+    state.imageFilter = target.value;
+    renderView();
     return;
   }
 
@@ -2947,10 +5000,48 @@ document.addEventListener('change', (event) => {
 });
 
 document.addEventListener('input', (event) => {
+  if (event.target.matches('#catalog-search')) {
+    state.catalogSearch = event.target.value;
+    const body = document.getElementById('catalog-body');
+    if (body) body.innerHTML = catalogBodyTemplate();
+    return;
+  }
+  if (event.target.matches('#image-search')) {
+    applyImageSearch();
+    return;
+  }
+  if (event.target.matches('#measure-length, #measure-height')) {
+    const form = event.target.closest('[data-measure-form]');
+    const service = state.services.find((item) => item.id === form?.dataset.id);
+    if (service) updateMeasurementPreview(service);
+    return;
+  }
+  if (event.target.matches('[data-cart-width], [data-cart-height]')) {
+    const index = Number(event.target.dataset.cartWidth ?? event.target.dataset.cartHeight);
+    const item = state.cart[index];
+    if (!item) return;
+    if (event.target.matches('[data-cart-width]')) item.width_ft = event.target.value;
+    else item.height_ft = event.target.value;
+    updateCartLine(index);
+    return;
+  }
   if (event.target.matches('#admin-search')) {
     state.adminSearch = event.target.value;
     updateAdminBookingsTable();
   }
+  // Typing in the booking form clears the field's error and keeps a draft, so
+  // an expired session or accidental navigation does not lose the work.
+  if (event.target.closest('#booking-form')) {
+    clearFieldError(event.target);
+    scheduleDraftSave();
+  }
+});
+
+// Validate a booking field when the user leaves it, not while they type.
+document.addEventListener('focusout', (event) => {
+  const field = event.target.closest?.('#booking-form input, #booking-form select, #booking-form textarea');
+  if (!field || !field.name) return;
+  setFieldError(field, bookingFieldProblem(field));
 });
 
 document.addEventListener('submit', async (event) => {
@@ -3154,6 +5245,42 @@ document.addEventListener('submit', async (event) => {
     await loadReport();
     return;
   }
+  if (form.id === 'new-service-form') {
+    event.preventDefault();
+    await saveNewService(form);
+    return;
+  }
+  if (form.matches('[data-measure-form]')) {
+    event.preventDefault();
+    const service = state.services.find((item) => item.id === form.dataset.id);
+    const errorBox = form.querySelector('[data-measure-error]');
+    if (!service) return;
+    const width = document.getElementById('measure-length')?.value;
+    const height = document.getElementById('measure-height')?.value;
+    const problem = measurementProblem({ ...service, width_ft: width, height_ft: height });
+    if (problem) {
+      if (errorBox) {
+        errorBox.textContent = problem;
+        errorBox.classList.add('show');
+      }
+      return;
+    }
+    try {
+      addMeasuredService(service, width, height);
+      closeModal({ restoreFocus: false });
+    } catch (error) {
+      if (errorBox) {
+        errorBox.textContent = error.message;
+        errorBox.classList.add('show');
+      }
+    }
+    return;
+  }
+  if (form.matches('[data-price-form]')) {
+    event.preventDefault();
+    await saveServicePrice(form);
+    return;
+  }
   if (form.dataset.formType) {
     event.preventDefault();
     await submitDrawerForm(form);
@@ -3200,6 +5327,12 @@ window.addEventListener('hashchange', () => {
 
 /* ---------- Boot ---------- */
 
+/**
+ * Boots the dashboard: confirms the session, loads every collection the role is
+ * allowed to see in one parallel batch, then renders the view named in the hash.
+ * A failure here replaces the page with a retry message rather than a blank
+ * screen, and a signed-out visitor is sent to `/login?next=/app`.
+ */
 async function init() {
   try {
     const user = await getCurrentUser();
@@ -3229,6 +5362,12 @@ async function init() {
     state.staff = staffData?.staff || [];
     state.notifications = alertData?.notifications || [];
     state.unread = alertData?.unread || 0;
+    // Global state wiring: keep the assistant transcript for this tab, watch the
+    // connection, classify 401/403 responses, and put back an unfinished booking.
+    restoreAssistantHistory();
+    setupConnectivity();
+    setupSessionGuard();
+    if (user.role === 'customer') restoreBookingDraft();
     if (user.must_change_password) {
       toast('Your password was reset. Choose a new one in Account & security.');
     }
@@ -3237,13 +5376,19 @@ async function init() {
     renderChrome();
     await navigate(view);
   } catch (error) {
+    // The console keeps the technical detail for developers; the page shows the
+    // plain-language cause and a way forward.
     console.error(error);
+    const info = errorInfo(error);
     viewRoot.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">${ICONS.close}</div>
-        <h3>We could not open the dashboard</h3>
-        <p>${esc(error.message)}</p>
-        <button class="btn btn-primary" type="button" data-reload>Try again</button>
+        <h3>${esc(info.title)}</h3>
+        <p>${esc(info.message)}</p>
+        <div class="no-results-actions">
+          <button class="btn btn-primary" type="button" data-reload>${esc(info.action)}</button>
+          ${info.kind === 'unauthorized' ? '<a class="btn" href="/login?next=/app">Sign in</a>' : ''}
+        </div>
       </div>`;
   }
 }

@@ -1,10 +1,22 @@
+/**
+ * End-to-end smoke test (`npm test`).
+ *
+ * Boots a real server on a free port with a throwaway DATA_DIR, then drives it
+ * over HTTP exactly as a browser would: sign up, sign in, book, pay, edit,
+ * cancel, two-factor, reports, and the permission boundaries between roles.
+ *
+ * Nothing outside the temp directory is touched, and Supabase is never used:
+ * the run is fully offline except for a local stand-in geocoder.
+ */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { totpAt } from '../server/security.js';
+import { addMissingCatalogServices } from '../server/store.js';
 
 const port = 3300 + (process.pid % 300);
 const base = `http://127.0.0.1:${port}`;
@@ -75,6 +87,58 @@ function futureDate(days) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
+/** A real, standards-compliant PNG so the image endpoint is tested end to end. */
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const name = Buffer.from(type, 'ascii');
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  name.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(Buffer.concat([name, data])), 8 + data.length);
+  return chunk;
+}
+
+function samplePng(width = 300, height = 300, rgb = [199, 43, 92]) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x += 1) {
+    row[1 + x * 3] = rgb[0];
+    row[2 + x * 3] = rgb[1];
+    row[3 + x * 3] = rgb[2];
+  }
+  const pixels = Buffer.concat(Array.from({ length: height }, () => row));
+  const signature = Buffer.from('89504e470d0a1a0a', 'hex');
+  return Buffer.concat([
+    signature,
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', zlib.deflateSync(pixels)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+async function latestResetLink() {
+  const pattern = /\[development password reset\] (\S+)/g;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const matches = [...serverLog.matchAll(pattern)];
+    if (matches.length) return matches[matches.length - 1][1];
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('The development password-reset link was not written to the server log.');
+}
+
 const child = spawn(process.execPath, ['server.js'], {
   cwd: process.cwd(),
   env: {
@@ -87,6 +151,7 @@ const child = spawn(process.execPath, ['server.js'], {
     GEOCODER_ENABLED: 'true',
     SEED_DEMO: 'true',
     MAX_SIMULTANEOUS_SERVICES: '5',
+    UPLOAD_DIR: path.join(dataDir, 'uploads'),
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -121,14 +186,67 @@ try {
   assert.equal(loginPage.status, 200);
   assert.match(loginPage.body, /Create my account/);
   assert.match(loginPage.body, /Crew records do not sign in/);
+  assert.match(loginPage.body, /Forgot your password\?/);
+  const forgotPage = await publicSession('/forgot-password');
+  assert.equal(forgotPage.status, 200);
+  assert.match(forgotPage.body, /Send reset link/);
+  const resetPage = await publicSession('/reset-password');
+  assert.equal(resetPage.status, 200);
+  assert.match(resetPage.body, /Choose a new password/);
   pass('the welcome page and sign-up/sign-in interface render');
+  pass('every role sees the forgot-password entry point and both recovery pages render');
 
   const catalog = await publicSession('/api/services');
   assert.equal(catalog.status, 200);
-  assert.ok(catalog.body.services.length >= 20);
+  assert.ok(catalog.body.services.length >= 130);
+  assert.equal(catalog.body.categories.length, 10);
   assert.ok(catalog.body.services.some((service) => service.id === 'tarpaulin'));
   assert.ok(catalog.body.services.some((service) => service.id === 'booth-360'));
-  pass('service catalog includes print and booth offerings');
+  assert.equal(Number(catalog.body.services.find((service) => service.id === 'tarpaulin').price), 1200);
+  const magnet = catalog.body.services.find((service) => service.id === 'magnet');
+  assert.deepEqual(
+    magnet.tiers.map((row) => [row.min, row.max, Number(row.price)]),
+    [
+      [1, 29, 35],
+      [30, null, 30],
+    ]
+  );
+  const anonPricing = await publicSession('/api/pricing');
+  assert.equal(anonPricing.status, 401);
+  pass('the 2026 catalog has ten public categories and quantity breaks');
+
+  // A store seeded before Tarpaulin and Blackout became measured products must
+  // receive them on the next startup, without rewriting prices it already has.
+  const legacyStore = {
+    rows: [{ id: 'tarpaulin', name: 'Tarpaulin – 2×3 ft', price: 1200, active: true }],
+    async list(table) {
+      assert.equal(table, 'services');
+      return this.rows.map((row) => ({ ...row }));
+    },
+    async insertMany(table, rows) {
+      assert.equal(table, 'services');
+      this.rows.push(...rows);
+    },
+  };
+  const addedByUpgrade = await addMissingCatalogServices(legacyStore);
+  assert.ok(addedByUpgrade >= 2);
+  assert.ok(legacyStore.rows.some((row) => row.id === 'tarpaulin-custom'));
+  assert.ok(legacyStore.rows.some((row) => row.id === 'blackout-custom'));
+  assert.equal(legacyStore.rows.find((row) => row.id === 'tarpaulin').price, 1200);
+  pass('an existing catalog gains new products on startup without losing its prices');
+
+  const measuredTarpaulin = catalog.body.services.find((service) => service.id === 'tarpaulin-custom');
+  const blackout = catalog.body.services.find((service) => service.id === 'blackout-custom');
+  assert.equal(Number(measuredTarpaulin.price), 20);
+  assert.equal(measuredTarpaulin.pricing_mode, 'area');
+  assert.equal(measuredTarpaulin.round_dimensions_up, true);
+  assert.equal(Number(measuredTarpaulin.min_dimension), 1);
+  assert.ok(measuredTarpaulin.image_url);
+  assert.equal(Number(blackout.price), 30);
+  assert.equal(blackout.pricing_mode, 'area');
+  assert.equal(blackout.round_dimensions_up, true);
+  assert.ok(blackout.image_url);
+  pass('Tarpaulin and Blackout publish separate per-square-foot configurations');
 
   const anonymous = await publicSession('/api/bookings');
   assert.equal(anonymous.status, 401);
@@ -154,6 +272,74 @@ try {
   assert.equal(registration.body.user.mfa_enabled, false);
   pass('customer registration enforces a strong password and signs in');
 
+  // ---- Measurement-based pricing, rounding, and validation
+  const measuredBooking = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(60),
+      items: [
+        { service_id: 'tarpaulin-custom', length_ft: 2.3, height_ft: 5, qty: 1 },
+        { service_id: 'blackout-custom', length_ft: 2, height_ft: 5.7, qty: 1 },
+      ],
+    }),
+  });
+  assert.equal(measuredBooking.status, 201, measuredBooking.body.error);
+  assert.equal(measuredBooking.body.booking.total, 660);
+  const tarpLine = measuredBooking.body.booking.items.find((item) => item.service_id === 'tarpaulin-custom');
+  const blackoutLine = measuredBooking.body.booking.items.find((item) => item.service_id === 'blackout-custom');
+  assert.equal(tarpLine.original_width_ft, 2.3);
+  assert.equal(tarpLine.original_height_ft, 5);
+  assert.equal(tarpLine.billed_width_ft, 3);
+  assert.equal(tarpLine.billed_height_ft, 5);
+  assert.equal(tarpLine.area_sqft, 15);
+  assert.equal(tarpLine.unit_price, 20);
+  assert.equal(tarpLine.line_total, 300);
+  assert.equal(blackoutLine.billed_height_ft, 6);
+  assert.equal(blackoutLine.area_sqft, 12);
+  assert.equal(blackoutLine.line_total, 360);
+  pass('measured products round each side up and use their own rates');
+
+  const tamperedMeasurement = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(60),
+      items: [
+        { service_id: 'tarpaulin-custom', length_ft: 2, height_ft: 5, unit_price: 1, line_total: 1, qty: 1 },
+      ],
+    }),
+  });
+  assert.equal(tamperedMeasurement.status, 201, tamperedMeasurement.body.error);
+  assert.equal(tamperedMeasurement.body.booking.total, 200);
+  pass('submitted prices are ignored and the server reprices measured lines');
+
+  const tooShortMeasurement = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(60),
+      items: [{ service_id: 'tarpaulin-custom', length_ft: 0.5, height_ft: 5 }],
+    }),
+  });
+  assert.equal(tooShortMeasurement.status, 400);
+  assert.match(tooShortMeasurement.body.error, /between 1 and 50/);
+  const zeroMeasurement = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(60),
+      items: [{ service_id: 'tarpaulin-custom', length_ft: 0, height_ft: 5 }],
+    }),
+  });
+  assert.equal(zeroMeasurement.status, 400);
+  assert.match(zeroMeasurement.body.error, /greater than zero/);
+  pass('measured lines reject zero and below-minimum dimensions');
+
   const duplicate = await publicSession('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify({ name: 'Smoke Tester', email, password: 'Smoke@Test123' }),
@@ -173,14 +359,14 @@ try {
       address: 'P. Burgos Street, Batangas City, Batangas',
       notes: 'Automated check.',
       items: [
-        { service_id: 'tarpaulin', width_ft: 2, height_ft: 3 },
+        { service_id: 'tarpaulin', qty: 1 },
         { service_id: 'photobooth-strips', qty: 1 },
       ],
     }),
   });
   assert.equal(booking.status, 201);
-  assert.equal(booking.body.booking.total, 3650);
-  assert.equal(booking.body.booking.subtotal, 3650);
+  assert.equal(booking.body.booking.total, 4700);
+  assert.equal(booking.body.booking.subtotal, 4700);
   assert.equal(booking.body.booking.booking_type, 'event');
   assert.equal(Number(booking.body.booking.duration_hours), 3);
   assert.equal(booking.body.booking.branch?.id, 'branch-batangas');
@@ -211,7 +397,7 @@ try {
       branch_id: 'branch-bauan',
       pickup_date: futureDate(12),
       pickup_time: '10:00',
-      items: [{ service_id: 'tarpaulin', width_ft: 2, height_ft: 3 }],
+      items: [{ service_id: 'tarpaulin', qty: 1 }],
     }),
   });
   assert.equal(pickup.status, 201);
@@ -220,7 +406,7 @@ try {
   assert.equal(pickup.body.booking.venue, 'Pickup — Bauan branch');
   assert.equal(pickup.body.booking.address, '');
   assert.equal(Number(pickup.body.booking.duration_hours), 0);
-  assert.equal(pickup.body.booking.total, 150);
+  assert.equal(pickup.body.booking.total, 1200);
   pass('a pickup booking uses only a chosen branch and pickup date');
 
   const pickupNoBranch = await customer('/api/bookings', {
@@ -228,11 +414,43 @@ try {
     body: JSON.stringify({
       booking_type: 'pickup',
       pickup_date: futureDate(12),
-      items: [{ service_id: 'tarpaulin', width_ft: 2, height_ft: 3 }],
+      items: [{ service_id: 'tarpaulin', qty: 1 }],
     }),
   });
   assert.equal(pickupNoBranch.status, 400);
   pass('a pickup booking requires an explicit branch');
+
+  // Quantity breaks are calculated from the stored catalog, and a quantity that
+  // falls between two published breaks is refused instead of guessed.
+  const tierBooking = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(41),
+      items: [
+        { service_id: 'magnet', qty: 30 },
+        { service_id: 'tote', qty: 5 },
+        { service_id: 'print-2r', qty: 14 },
+      ],
+    }),
+  });
+  assert.equal(tierBooking.status, 201, tierBooking.body.error);
+  assert.equal(tierBooking.body.booking.total, 900 + 1000 + 42);
+  pass('quantity breaks and print minimums are priced on the server');
+
+  const gapBooking = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(41),
+      items: [{ service_id: 'key-holder', qty: 75 }],
+    }),
+  });
+  assert.equal(gapBooking.status, 400);
+  assert.match(gapBooking.body.error, /price breaks/);
+  pass('a quantity between published price breaks asks for a quote');
 
   // Manual branch selection beats the geocoder, for both types.
   const manualBranch = await customer('/api/bookings', {
@@ -342,7 +560,7 @@ try {
       branch_id: 'branch-batangas',
       venue: 'Print delivery venue',
       address: 'P. Burgos Street, Batangas City, Batangas',
-      items: [{ service_id: 'tarpaulin', width_ft: 2, height_ft: 3 }],
+      items: [{ service_id: 'tarpaulin', qty: 1 }],
     }),
   });
   assert.equal(printOnly.status, 201);
@@ -373,6 +591,101 @@ try {
   assert.equal(adminLogin.status, 200);
   assert.equal(adminLogin.body.user.role, 'admin');
   pass('admin demo login works');
+
+  const pricing = await admin('/api/pricing');
+  assert.equal(pricing.status, 200);
+  assert.equal(pricing.body.client_prices.length, 21);
+  assert.ok(pricing.body.reviews.length >= 3);
+  const customerPricing = await customer('/api/pricing');
+  assert.equal(customerPricing.status, 403);
+  pass('client-specific rates and review flags are owner-only');
+
+  const editedPrice = await admin('/api/services/sticker-cut-3', {
+    method: 'PATCH',
+    body: JSON.stringify({ price: 40 }),
+  });
+  assert.equal(editedPrice.status, 200);
+  assert.equal(Number(editedPrice.body.service.price), 40);
+  const editedPriceBooking = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(42),
+      items: [{ service_id: 'sticker-cut-3', qty: 1 }],
+    }),
+  });
+  assert.equal(editedPriceBooking.status, 201, editedPriceBooking.body.error);
+  assert.equal(editedPriceBooking.body.booking.total, 40);
+  await admin('/api/services/sticker-cut-3', {
+    method: 'PATCH',
+    body: JSON.stringify({ price: 36 }),
+  });
+  pass('an owner price edit applies to the next booking');
+
+  const measuredBeforeEdit = await customer(`/api/bookings/${measuredBooking.body.booking.id}`);
+  assert.equal(measuredBeforeEdit.status, 200);
+  assert.equal(measuredBeforeEdit.body.booking.total, 660);
+  const changedMeasuredRate = await admin('/api/services/tarpaulin-custom', {
+    method: 'PATCH',
+    body: JSON.stringify({ price: 25 }),
+  });
+  assert.equal(changedMeasuredRate.status, 200);
+  assert.equal(Number(changedMeasuredRate.body.service.price), 25);
+  const measuredAfterEdit = await customer(`/api/bookings/${measuredBooking.body.booking.id}`);
+  const frozenTarp = measuredAfterEdit.body.booking.items.find((item) => item.service_id === 'tarpaulin-custom');
+  assert.equal(frozenTarp.unit_price, 20);
+  assert.equal(frozenTarp.area_sqft, 15);
+  assert.equal(frozenTarp.line_total, 300);
+  assert.equal(measuredAfterEdit.body.booking.total, 660);
+  await admin('/api/services/tarpaulin-custom', {
+    method: 'PATCH',
+    body: JSON.stringify({ price: 20 }),
+  });
+  pass('confirmed measured orders keep their original rate and dimensions');
+
+  const editedTiers = await admin('/api/services/magnet', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      tiers: [
+        { min: 1, max: 29, price: 36, label: '1–29 pcs' },
+        { min: 30, max: null, price: 31, label: '30+ pcs' },
+      ],
+    }),
+  });
+  assert.equal(editedTiers.status, 200);
+  const editedTierBooking = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'pickup',
+      branch_id: 'branch-batangas',
+      pickup_date: futureDate(43),
+      items: [{ service_id: 'magnet', qty: 30 }],
+    }),
+  });
+  assert.equal(editedTierBooking.status, 201, editedTierBooking.body.error);
+  assert.equal(editedTierBooking.body.booking.total, 930);
+  const overlap = await admin('/api/services/magnet', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      tiers: [
+        { min: 1, max: 50, price: 36 },
+        { min: 40, max: null, price: 31 },
+      ],
+    }),
+  });
+  assert.equal(overlap.status, 400);
+  assert.match(overlap.body.error, /overlap|open-ended/);
+  await admin('/api/services/magnet', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      tiers: [
+        { min: 1, max: 29, price: 35, label: '1–29 pcs' },
+        { min: 30, max: null, price: 30, label: '30+ pcs' },
+      ],
+    }),
+  });
+  pass('quantity breaks are editable and overlapping breaks are rejected');
 
   const accounts = await admin('/api/accounts');
   assert.equal(accounts.status, 200);
@@ -464,6 +777,89 @@ try {
   assert.equal(branch1Login.body.user.role, 'branch_admin');
   assert.equal(branch1Login.body.user.branch_id, 'branch-batangas');
   pass('branch 1 administrator signs in with their own account');
+
+  // ---- Shared product images: permissions, validation, replacement, cache path
+  const imageConsole = await branch1('/api/product-images');
+  assert.equal(imageConsole.status, 200);
+  assert.ok(imageConsole.body.stats.total >= 130);
+  assert.ok(imageConsole.body.services.some((service) => service.id === 'tarpaulin-custom'));
+  const originalCustomImage = imageConsole.body.services.find((service) => service.id === 'tarpaulin-custom').image_url;
+  assert.ok(originalCustomImage);
+
+  const customerImageUpload = await customer('/api/services/tarpaulin-custom/image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: samplePng(),
+  });
+  assert.equal(customerImageUpload.status, 403);
+
+  const invalidImageUpload = await branch1('/api/services/tarpaulin-custom/image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: Buffer.from('not an image'),
+  });
+  assert.equal(invalidImageUpload.status, 400);
+  assert.match(invalidImageUpload.body.error, /real JPG, PNG, or WEBP/);
+
+  const uploadedImage = await branch1('/api/services/tarpaulin-custom/image?alt=Smoke-tested%20tarpaulin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: samplePng(300, 300, [199, 43, 92]),
+  });
+  assert.equal(uploadedImage.status, 200, uploadedImage.body.error);
+  assert.match(uploadedImage.body.service.image_url, /^\/uploads\/products\/[a-f0-9-]+\.png$/);
+  assert.equal(uploadedImage.body.service.image_width, 300);
+  assert.equal(uploadedImage.body.service.image_height, 300);
+  assert.equal(uploadedImage.body.service.image_alt, 'Smoke-tested tarpaulin');
+  const uploadedPath = uploadedImage.body.service.image_url;
+
+  const servedImage = await publicSession(uploadedPath);
+  assert.equal(servedImage.status, 200);
+  assert.match(servedImage.headers.get('content-type') || '', /image\/png/);
+
+  const tooSmallReplacement = await branch1('/api/services/tarpaulin-custom/image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: samplePng(100, 100),
+  });
+  assert.equal(tooSmallReplacement.status, 400);
+  const afterFailedReplacement = await publicSession('/api/services');
+  assert.equal(
+    afterFailedReplacement.body.services.find((service) => service.id === 'tarpaulin-custom').image_url,
+    uploadedPath
+  );
+
+  const adminReplacement = await admin('/api/services/tarpaulin-custom/image?alt=Owner%20replacement', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: samplePng(320, 300, [53, 27, 39]),
+  });
+  assert.equal(adminReplacement.status, 200, adminReplacement.body.error);
+  assert.notEqual(adminReplacement.body.service.image_url, uploadedPath);
+  const staleImage = await publicSession(uploadedPath);
+  assert.equal(staleImage.status, 404);
+
+  const removedImage = await branch1('/api/services/tarpaulin-custom/image', { method: 'DELETE' });
+  assert.equal(removedImage.status, 200);
+  assert.equal(removedImage.body.service.image_url, '');
+  assert.equal(removedImage.body.service.catalog_visible, false);
+  const hiddenCatalog = await publicSession('/api/services');
+  assert.equal(hiddenCatalog.body.services.some((service) => service.id === 'tarpaulin-custom'), false);
+
+  const restoredImage = await branch1('/api/services/tarpaulin-custom/image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: samplePng(300, 300, [160, 55, 80]),
+  });
+  assert.equal(restoredImage.status, 200);
+  assert.equal(restoredImage.body.service.catalog_visible, true);
+  const restoredCatalog = await publicSession('/api/services');
+  assert.equal(restoredCatalog.body.services.some((service) => service.id === 'tarpaulin-custom'), true);
+
+  const imageAudit = await branch1('/api/product-images');
+  assert.ok(imageAudit.body.recent_changes.length >= 3);
+  assert.ok(imageAudit.body.recent_changes.every((log) => log.actor_role === 'admin' || log.actor_role === 'branch_admin'));
+  pass('both admin roles manage shared images with validation, replacement, audit, and visibility rules');
 
   const branch2 = session();
   const branch2Login = await branch2('/api/auth/login', {
@@ -563,13 +959,13 @@ try {
       booking_type: 'pickup',
       branch_id: 'branch-batangas',
       pickup_date: futureDate(40),
-      items: [{ service_id: 'tarpaulin', width_ft: 2, height_ft: 3 }],
+      items: [{ service_id: 'tarpaulin', qty: 1 }],
     }),
   });
   assert.equal(discountedBooking.status, 201);
-  assert.equal(discountedBooking.body.booking.subtotal, 150);
-  assert.equal(discountedBooking.body.booking.discount_amount, 15);
-  assert.equal(discountedBooking.body.booking.total, 135);
+  assert.equal(discountedBooking.body.booking.subtotal, 1200);
+  assert.equal(discountedBooking.body.booking.discount_amount, 120);
+  assert.equal(discountedBooking.body.booking.total, 1080);
   pass('the discount is applied server-side to the booking total');
 
   const deactivatedDiscount = await admin(`/api/discounts/${discount.body.discount.id}`, {
@@ -589,7 +985,7 @@ try {
   assert.equal(assistant.status, 200);
   assert.equal(assistant.body.in_scope, true);
   assert.match(assistant.body.answer, /Tarpaulin/);
-  assert.match(assistant.body.answer, /₱25/);
+  assert.match(assistant.body.answer, /₱1,200/);
   const outOfScope = await discountedCustomer('/api/assistant', {
     method: 'POST',
     body: JSON.stringify({ message: 'Who is the president of France?' }),
@@ -604,6 +1000,32 @@ try {
   assert.equal(statusAnswer.body.in_scope, true);
   assert.match(statusAnswer.body.answer, /PM-\d+/);
   pass('the assistant answers from system data and rejects everything else');
+
+  // ---- PRECIOUS understands Filipino and Taglish
+  const filipino = await customer('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({ message: 'Magkano ang tarpaulin?' }),
+  });
+  assert.equal(filipino.status, 200);
+  assert.equal(filipino.body.in_scope, true);
+  assert.equal(filipino.body.language, 'fil');
+  assert.match(filipino.body.answer, /Tarpaulin/);
+  assert.match(filipino.body.answer, /rate sa file/);
+  const taglish = await customer('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({ message: 'Paano gumawa ng bagong booking?' }),
+  });
+  assert.equal(taglish.body.in_scope, true);
+  assert.equal(taglish.body.language, 'fil');
+  assert.match(taglish.body.answer, /New booking/);
+  const filipinoOutOfScope = await customer('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({ message: 'Sino ang presidente ng France?' }),
+  });
+  assert.equal(filipinoOutOfScope.body.in_scope, false);
+  assert.equal(filipinoOutOfScope.body.language, 'fil');
+  assert.match(filipinoOutOfScope.body.answer, /Pasensya na/);
+  pass('PRECIOUS answers Filipino and Taglish, and declines politely in kind');
 
   // ---- Password change and MFA
   const mfaUser = session();
@@ -670,13 +1092,117 @@ try {
   assert.equal(mfaMe.status, 200);
   pass('two-factor is required at sign-in before a session is issued');
 
+  // ---- Unified self-service password recovery
+  const unknownForgot = await publicSession('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email: `nobody-${Date.now()}@example.com` }),
+  });
+  assert.equal(unknownForgot.status, 200);
+  const adminForgot = await publicSession('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email: 'admin@precious.ph' }),
+  });
+  const branchForgot = await publicSession('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email: 'batangas@precious.ph' }),
+  });
+  assert.equal(adminForgot.status, 200);
+  assert.equal(branchForgot.status, 200);
+  assert.equal(adminForgot.body.message, unknownForgot.body.message);
+  assert.equal(branchForgot.body.message, unknownForgot.body.message);
+
+  const recoverySession = session();
+  const recoveryEmail = `recovery-${Date.now()}@example.com`;
+  const oldRecoveryPassword = 'Recovery@Start1';
+  const newRecoveryPassword = 'Recovery@Next2026';
+  const recoveryRegistration = await recoverySession('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Recovery Tester', email: recoveryEmail, password: oldRecoveryPassword }),
+  });
+  assert.equal(recoveryRegistration.status, 201);
+  const secondRecoverySession = session();
+  const secondRecoveryLogin = await secondRecoverySession('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: recoveryEmail, password: oldRecoveryPassword }),
+  });
+  assert.equal(secondRecoveryLogin.status, 200);
+
+  const recoveryForgot = await publicSession('/api/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email: recoveryEmail }),
+  });
+  assert.equal(recoveryForgot.status, 200);
+  assert.equal(recoveryForgot.body.message, unknownForgot.body.message);
+  const resetLink = await latestResetLink();
+  const resetToken = new URL(resetLink).searchParams.get('token');
+  assert.ok(resetToken && resetToken.length >= 40);
+
+  const storedAfterRequest = JSON.parse(fs.readFileSync(path.join(dataDir, 'store.json'), 'utf8'));
+  const resetRow = storedAfterRequest.password_resets.find(
+    (row) => row.user_id === recoveryRegistration.body.user.id
+  );
+  assert.ok(resetRow);
+  assert.equal(resetRow.token, undefined);
+  assert.notEqual(resetRow.token_hash, resetToken);
+  assert.equal(resetRow.used_at, null);
+
+  const validatedReset = await publicSession('/api/auth/reset-password/validate', {
+    method: 'POST',
+    body: JSON.stringify({ token: resetToken }),
+  });
+  assert.equal(validatedReset.status, 200);
+  assert.ok(validatedReset.body.expires_at);
+  const weakReset = await publicSession('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token: resetToken, password: 'weakpassword', confirm_password: 'weakpassword' }),
+  });
+  assert.equal(weakReset.status, 400);
+  assert.match(weakReset.body.error, /uppercase|lowercase|number|symbol|10 characters/i);
+  const mismatchReset = await publicSession('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token: resetToken, password: newRecoveryPassword, confirm_password: 'Different@2026' }),
+  });
+  assert.equal(mismatchReset.status, 400);
+  const completedReset = await publicSession('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token: resetToken, password: newRecoveryPassword, confirm_password: newRecoveryPassword }),
+  });
+  assert.equal(completedReset.status, 200, completedReset.body.error);
+  const reusedReset = await publicSession('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token: resetToken, password: 'Recovery@Third2026', confirm_password: 'Recovery@Third2026' }),
+  });
+  assert.equal(reusedReset.status, 400);
+  assert.match(reusedReset.body.error, /already been used/);
+
+  const firstSessionAfterReset = await recoverySession('/api/auth/me');
+  const secondSessionAfterReset = await secondRecoverySession('/api/auth/me');
+  assert.equal(firstSessionAfterReset.status, 401);
+  assert.equal(secondSessionAfterReset.status, 401);
+  const oldRecoveryLogin = await session()('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: recoveryEmail, password: oldRecoveryPassword }),
+  });
+  assert.equal(oldRecoveryLogin.status, 401);
+  const newRecoveryLogin = await session()('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: recoveryEmail, password: newRecoveryPassword }),
+  });
+  assert.equal(newRecoveryLogin.status, 200);
+
+  const auditLogs = await admin('/api/audit-logs?limit=200');
+  assert.equal(auditLogs.status, 200);
+  assert.ok(auditLogs.body.logs.some((log) => log.action === 'password_reset.requested'));
+  assert.ok(auditLogs.body.logs.some((log) => log.action === 'password_reset.completed'));
+  pass('all roles can request recovery; tokens are hashed, single-use, and revoke sessions');
+
   // ---- Payments, reports, origin protection
   const paid = await admin(`/api/bookings/${bookingId}/payment`, {
     method: 'PATCH',
     body: JSON.stringify({ payment_status: 'deposit_paid', payment_method: 'GCash', payment_ref: 'SMOKE-001' }),
   });
   assert.equal(paid.status, 200);
-  assert.equal(paid.body.booking.amount_paid, Math.ceil(3650 / 2));
+  assert.equal(paid.body.booking.amount_paid, Math.ceil(4700 / 2));
   pass('admin records a deposit at 50%');
 
   const crossOrigin = await admin(`/api/bookings/${bookingId}`, {

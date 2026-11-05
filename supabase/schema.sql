@@ -31,6 +31,7 @@ create table if not exists public.pm_users (
   mfa_enabled boolean not null default false,
   mfa_secret text,
   mfa_pending_secret text,
+  session_version integer not null default 0,
   must_change_password boolean not null default false,
   created_at timestamptz not null default now()
 );
@@ -45,10 +46,32 @@ create table if not exists public.pm_services (
   pricing_mode text not null check (pricing_mode in ('fixed', 'area')),
   min_area numeric(8, 2),
   min_qty integer,
+  tiers jsonb not null default '[]'::jsonb,
+  base_fee numeric(12, 2) not null default 0,
+  dimension_unit text not null default 'ft',
+  image_url text not null default '',
+  image_alt text not null default '',
+  image_updated_at timestamptz,
+  image_updated_by text,
+  image_width integer,
+  image_height integer,
+  catalog_visible boolean not null default true,
+  round_dimensions_up boolean not null default false,
+  min_dimension numeric(8, 2),
+  max_dimension numeric(8, 2),
+  capacity boolean not null default false,
+  needs_review boolean not null default false,
+  review_note text not null default '',
   popular boolean not null default false,
+  addon boolean not null default false,
+  booking_availability text not null default 'unassigned'
+    check (booking_availability in ('pickup', 'event', 'both', 'unassigned')),
   active boolean not null default true,
   sort integer not null default 0,
-  created_at timestamptz not null default now()
+  origin text not null default 'catalog',
+  admin_edited boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists public.pm_bookings (
@@ -95,6 +118,31 @@ create table if not exists public.pm_discounts (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.pm_password_resets (
+  id text primary key,
+  user_id text not null references public.pm_users(id) on delete cascade,
+  token_hash text not null unique,
+  requested_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  used_at timestamptz,
+  requested_by_ip text not null default '',
+  used_by_ip text not null default '',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.pm_audit_logs (
+  id text primary key,
+  actor_id text,
+  actor_role text not null default 'guest',
+  action text not null,
+  target_type text not null default '',
+  target_id text,
+  metadata jsonb not null default '{}'::jsonb,
+  ip text not null default '',
+  user_agent text not null default '',
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.pm_booking_updates (
   id text primary key,
   booking_id text not null references public.pm_bookings(id) on delete cascade,
@@ -124,6 +172,10 @@ create index if not exists pm_bookings_event_date_idx on public.pm_bookings (eve
 create index if not exists pm_bookings_status_idx on public.pm_bookings (status);
 create index if not exists pm_bookings_type_idx on public.pm_bookings (booking_type);
 create index if not exists pm_discounts_customer_idx on public.pm_discounts (customer_id) where active;
+create index if not exists pm_password_resets_token_idx on public.pm_password_resets (token_hash);
+create index if not exists pm_password_resets_user_idx on public.pm_password_resets (user_id, created_at desc);
+create index if not exists pm_audit_logs_created_idx on public.pm_audit_logs (created_at desc);
+create index if not exists pm_audit_logs_actor_idx on public.pm_audit_logs (actor_id, created_at desc);
 create index if not exists pm_booking_updates_booking_idx on public.pm_booking_updates (booking_id, created_at);
 
 -- The two studio branches. Bookings are routed to the nearest one.
@@ -153,6 +205,8 @@ alter table public.pm_bookings enable row level security;
 alter table public.pm_booking_updates enable row level security;
 alter table public.pm_notifications enable row level security;
 alter table public.pm_discounts enable row level security;
+alter table public.pm_password_resets enable row level security;
+alter table public.pm_audit_logs enable row level security;
 
 -- Deliberately no anon/authenticated policies: the public API is the only
 -- client. The Node server connects with the service-role key, which bypasses

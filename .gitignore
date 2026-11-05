@@ -8,3 +8,9 @@ __pycache__/
 *.pyc
 *.log
 .DS_Store
+
+# Local preview server data and screenshots
+.tmp-live/
+
+# Administrator-uploaded product photos live on disk, not in version control.
+public/uploads/

@@ -1,8 +1,13 @@
-// Creates (or resets) the two branch administrator accounts.
-// Passwords are generated here and written to a git-ignored file, never printed.
-//
-//   npm run setup:branches                 # both branch admins
-//   npm run setup:branches -- --reset-owner  # also reset the studio owner password
+/**
+ * Creates or resets the two branch-head accounts (and optionally the owner).
+ *
+ *   npm run setup:branches                    # both branch heads
+ *   npm run setup:branches -- --reset-owner   # also reset the studio owner
+ *
+ * Passwords are generated here, hashed with the app's own scrypt function, and
+ * written to a git-ignored credentials file — never printed to the terminal or
+ * committed. Branch ids match SEED_BRANCHES so routing keeps working.
+ */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';

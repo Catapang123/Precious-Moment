@@ -1,3 +1,11 @@
+/**
+ * Reporting: turn raw bookings into the numbers the owner needs, then into a
+ * CSV that opens cleanly in Excel or Google Sheets.
+ *
+ * Used by `/api/reports`, `/api/reports.csv`, `npm run report`, and the scheduled
+ * GitHub Action. The same builder runs everywhere so the emailed report and the
+ * in-app report can never disagree.
+ */
 export const BOOKING_STATUSES = ['pending', 'confirmed', 'in_progress', 'ready', 'completed', 'cancelled'];
 
 function dateInRange(value, from, to) {
@@ -5,6 +13,13 @@ function dateInRange(value, from, to) {
   return day >= from && day <= to;
 }
 
+/**
+ * Aggregates bookings for an inclusive date range.
+ *
+ * Two different windows are in play: bookings created counts by `created_at`,
+ * while money counts by `paid_at`. That is why a payment received this month for
+ * last month's event still appears in this month's revenue.
+ */
 export function buildReport(bookings, users, from, to) {
   const created = bookings.filter((booking) => dateInRange(booking.created_at, from, to));
   const userMap = new Map(users.map((user) => [user.id, user]));
@@ -97,6 +112,10 @@ export function buildReport(bookings, users, from, to) {
   };
 }
 
+/**
+ * Quotes one CSV cell. A leading =, +, -, or @ is prefixed with an apostrophe so
+ * a crafted customer name cannot become a spreadsheet formula on open.
+ */
 function csvCell(value) {
   let text = String(value ?? '');
   // Guard against spreadsheet formula injection before quoting.
@@ -104,6 +123,7 @@ function csvCell(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+/** Renders a built report as CSV, with a BOM so Excel reads it as UTF-8. */
 export function reportCsv(report) {
   const { period, summary, created_bookings: rows } = report;
   const lines = [

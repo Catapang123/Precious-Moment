@@ -20,6 +20,7 @@ ACTIVE = {"pending", "confirmed", "in_progress", "ready"}
 
 
 def load_env(path=".env"):
+    """Read KEY=VALUE pairs from .env without overwriting real environment vars."""
     if not Path(path).exists():
         return
     for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -31,6 +32,7 @@ def load_env(path=".env"):
 
 
 def fetch(table, base_url, key):
+    """GET every row of one Supabase table using the service-role key."""
     query = urllib.parse.urlencode({"select": "*", "limit": "10000"})
     request = urllib.request.Request(
         f"{base_url.rstrip('/')}/rest/v1/{table}?{query}",
@@ -45,14 +47,17 @@ def fetch(table, base_url, key):
 
 
 def day(value):
+    """Date part of a timestamp, as YYYY-MM-DD."""
     return str(value or "")[:10]
 
 
 def in_range(value, start, end):
+    """True when a timestamp's date falls inside the inclusive range."""
     return start <= day(value) <= end
 
 
 def to_number(value):
+    """Coerce a database value to a number, defaulting to 0."""
     try:
         return float(value or 0)
     except (TypeError, ValueError):
@@ -60,12 +65,14 @@ def to_number(value):
 
 
 def previous_month():
+    """First and last day of the previous calendar month."""
     today = date.today().replace(day=1)
     last = today - timedelta(days=1)
     return last.replace(day=1), last
 
 
 def parse_args():
+    """Command-line date range, defaulting to the previous month."""
     start, end = previous_month()
     if len(sys.argv) >= 3:
         try:
@@ -78,6 +85,7 @@ def parse_args():
 
 
 def build(bookings, users, start, end):
+    """Aggregate bookings for the CSV; mirrors server/reports.js."""
     user_map = {user["id"]: user for user in users}
     created = [b for b in bookings if in_range(b.get("created_at"), start, end)]
     by_status = {status: 0 for status in STATUSES}
@@ -152,6 +160,7 @@ def build(bookings, users, start, end):
 
 
 def cell(value):
+    """Quote a CSV cell and defuse spreadsheet formulas."""
     text = str(value if value is not None else "")
     if text[:1] in ("=", "+", "-", "@"):
         text = "'" + text
@@ -159,6 +168,7 @@ def cell(value):
 
 
 def write_csv(path, report, start, end):
+    """Write the report with a UTF-8 BOM so Excel reads it correctly."""
     summary = report["summary"]
     lines = [
         ["Precious Moments operations report"],
@@ -194,6 +204,7 @@ def write_csv(path, report, start, end):
 
 
 def main():
+    """Entry point: load config, build the report, write it, print a summary."""
     load_env()
     base_url = os.environ.get("SUPABASE_URL", "").strip()
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()

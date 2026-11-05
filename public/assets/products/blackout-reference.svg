@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+  <title id="title">Blackout product reference</title>
+  <desc id="desc">A matte black blackout backdrop with metal grommets and a soft studio light.</desc>
+  <defs>
+    <radialGradient id="bg" cx=".7" cy=".2" r=".9">
+      <stop offset="0" stop-color="#5b3b49"/>
+      <stop offset=".55" stop-color="#2a1420"/>
+      <stop offset="1" stop-color="#160a10"/>
+    </radialGradient>
+    <linearGradient id="cloth" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b2226"/>
+      <stop offset=".45" stop-color="#111014"/>
+      <stop offset=".72" stop-color="#242025"/>
+      <stop offset="1" stop-color="#09090b"/>
+    </linearGradient>
+    <linearGradient id="light" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7f3" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#fff7f3" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="22" flood-color="#000" flood-opacity=".55"/>
+    </filter>
+    <g id="grommet">
+      <circle r="17" fill="#9a927e" stroke="#4a453b" stroke-width="4"/>
+      <circle r="8" fill="#0b0b0d"/>
+    </g>
+  </defs>
+  <rect width="1200" height="900" fill="url(#bg)"/>
+  <path d="M0 0h1200v260L0 560Z" fill="url(#light)" opacity=".65"/>
+  <g transform="translate(150 160) rotate(1.5 450 290)" filter="url(#shadow)">
+    <rect x="0" y="0" width="900" height="570" rx="7" fill="url(#cloth)" stroke="#5a5158" stroke-opacity=".45" stroke-width="2"/>
+    <path d="M28 0c30 180 6 390 0 570M174 0c20 150 8 410-8 570M330 0c24 180-8 400 14 570M492 0c-20 170 18 400-4 570M648 0c12 180-6 390 8 570M804 0c30 160-2 420-12 570M872 0c0 160 10 390 0 570" fill="none" stroke="#fff7f3" stroke-opacity=".055" stroke-width="13"/>
+    <path d="M0 70h900M0 500h900" stroke="#fff7f3" stroke-opacity=".12" stroke-width="2" stroke-dasharray="7 11"/>
+    <use href="#grommet" x="35" y="35"/>
+    <use href="#grommet" x="865" y="35"/>
+    <use href="#grommet" x="35" y="535"/>
+    <use href="#grommet" x="865" y="535"/>
+    <use href="#grommet" x="450" y="35"/>
+    <use href="#grommet" x="450" y="535"/>
+    <g opacity=".82">
+      <text x="450" y="238" text-anchor="middle" font-family="Manrope, Segoe UI, sans-serif" font-size="24" letter-spacing="9" fill="#d7b9c5">PRECIOUS MOMENTS</text>
+      <text x="450" y="338" text-anchor="middle" font-family="Georgia, serif" font-size="86" fill="#fff7f3">Blackout</text>
+      <path d="M292 390c90-24 226-24 316 0" fill="none" stroke="#c6953c" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+  <g transform="translate(1000 780)">
+    <rect x="-180" y="-38" width="360" height="66" rx="33" fill="#fff7f3" fill-opacity=".92"/>
+    <text x="0" y="5" text-anchor="middle" font-family="Manrope, Segoe UI, sans-serif" font-size="17" letter-spacing="3" fill="#351b27">PRODUCT REFERENCE · BLACKOUT</text>
+  </g>
+</svg>

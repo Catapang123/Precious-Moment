@@ -1,12 +1,27 @@
+/**
+ * The Express application: every HTTP route, middleware, and authorization rule.
+ *
+ * Request pipeline:
+ *   security headers -> same-origin check -> cookie/session hydration -> routes.
+ *
+ * Authorization is enforced here, on the server, for every endpoint. The browser
+ * may hide a button, but it can never grant itself a capability: each handler
+ * re-checks the role and, for branch heads, the branch the record belongs to.
+ *
+ * Data access goes through the store interface only (`server/store.js`), so the
+ * same routes work against the JSON file store and Supabase.
+ */
 import crypto from 'node:crypto';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { answerQuestion } from './assistant.js';
 import { capacityUnits, checkCapacity, toMinutes } from './availability.js';
-import { CATEGORIES, findService, priceLine } from './catalog.js';
+import { CATEGORIES, CLIENT_CATEGORY, CLIENT_PRICES, PRICE_REVIEWS, priceLine } from './catalog.js';
 import { locateBookingAddress } from './geo.js';
-import { APP_ORIGIN, DATA_DIR, IS_PROD } from './config.js';
+import { APP_ORIGIN, DATA_DIR, IS_PROD, PASSWORD_RESET_TTL_MINUTES, UPLOAD_DIR } from './config.js';
+import { inspectProductImage, removeProductImage, saveProductImage } from './images.js';
+import { sendPasswordResetEmail } from './mail.js';
 import { BOOKING_STATUSES, buildReport, reportCsv } from './reports.js';
 import {
   COOKIE_NAME,
@@ -15,6 +30,7 @@ import {
   createMfaChallenge,
   createSessionToken,
   hashPassword,
+  hashOpaqueToken,
   loadSessionSecret,
   newTotpSecret,
   otpauthUrl,
@@ -28,6 +44,8 @@ import {
   verifyTotp,
 } from './security.js';
 
+/* ---------- Paths and shared constants ---------- */
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -35,9 +53,49 @@ const PAYMENT_STATUSES = ['unpaid', 'deposit_paid', 'paid', 'refunded'];
 const STAFF_STATUSES = ['in_progress', 'ready', 'completed'];
 const ACCOUNT_ROLES = ['admin', 'branch_admin'];
 const LOGIN_ROLES = ['admin', 'branch_admin', 'customer'];
+const BOOKING_AVAILABILITIES = ['pickup', 'event', 'both', 'unassigned'];
+const SERVICE_CATEGORY_NAMES = CATEGORIES.map((category) => category.name);
 
 const json = (res, status, body) => res.status(status).json(body);
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const RESET_REQUEST_MESSAGE =
+  'If an account matches that email, a password reset link is on its way. Check your inbox and spam folder.';
+
+function requestIp(req) {
+  return String(req.ip || req.socket?.remoteAddress || '').slice(0, 80);
+}
+
+/**
+ * Appends an audit record. Audit failures are logged but never break the action
+ * that was already completed; passwords and reset tokens are never passed here.
+ */
+async function audit(store, req, { action, actorId = null, actorRole = 'guest', targetType = '', targetId = null, metadata = {} }) {
+  try {
+    await store.insert('audit_logs', {
+      id: crypto.randomUUID(),
+      actor_id: actorId,
+      actor_role: actorRole,
+      action,
+      target_type: targetType,
+      target_id: targetId,
+      metadata,
+      ip: requestIp(req),
+      user_agent: String(req.get('user-agent') || '').slice(0, 300),
+      created_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error(`Audit log failed (${action}):`, error.message);
+  }
+}
+
+async function findResetToken(store, token, secret) {
+  if (!token || String(token).length < 20) return null;
+  const tokenHash = hashOpaqueToken(token, secret);
+  const resets = await store.list('password_resets');
+  return resets.find((reset) => reset.token_hash === tokenHash) || null;
+}
+
+/* ---------- Small helpers: validation, dates, booking shape ---------- */
 
 function temporaryPassword() {
   const body = crypto
@@ -103,6 +161,70 @@ function discountLabelFor(discount) {
   return `${discount.note || 'Discount'} (${amount})`;
 }
 
+function serviceAvailability(service) {
+  const value = String(service?.booking_availability || '');
+  return BOOKING_AVAILABILITIES.includes(value) ? value : 'unassigned';
+}
+
+function serviceAvailableFor(service, bookingType) {
+  const availability = serviceAvailability(service);
+  return availability === 'both' || availability === bookingType;
+}
+
+function serviceNameKey(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function serviceMoney(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 1000000) {
+    throw fail(400, `${label} must be a number between 0 and 1,000,000.`);
+  }
+  return Math.round(number * 100) / 100;
+}
+
+function serviceTiers(value) {
+  if (!Array.isArray(value) || value.length > 12) {
+    throw fail(400, 'Price breaks must be a list of up to 12 rows.');
+  }
+  const rows = value
+    .map((row, index) => {
+      const min = Number(row?.min);
+      const max = row?.max === null || row?.max === undefined || row?.max === '' ? null : Number(row.max);
+      if (!Number.isInteger(min) || min < 1) {
+        throw fail(400, `Price break ${index + 1}: the minimum must be a whole number of at least 1.`);
+      }
+      if (max !== null && (!Number.isInteger(max) || max < min)) {
+        throw fail(
+          400,
+          `Price break ${index + 1}: the maximum must be a whole number at least as large as the minimum.`
+        );
+      }
+      return {
+        min,
+        max,
+        price: serviceMoney(row?.price, `Price break ${index + 1} price`),
+        label: String(
+          row?.label || (max === null ? `${min}+ pcs` : `${min}\u2013${max} pcs`)
+        ).slice(0, 80),
+      };
+    })
+    .sort((a, b) => a.min - b.min);
+  for (let index = 1; index < rows.length; index += 1) {
+    if (rows[index - 1].max === null) {
+      throw fail(400, 'The open-ended price break must be last.');
+    }
+    if (rows[index].min <= rows[index - 1].max) {
+      throw fail(400, 'Price breaks cannot overlap.');
+    }
+  }
+  return rows;
+}
+
 function normaliseBooking(booking) {
   if (!booking) return null;
   return {
@@ -116,6 +238,8 @@ function normaliseBooking(booking) {
     pickup_time: booking.pickup_time || '',
   };
 }
+
+/* ---------- Request guards: cookies, same-origin, permissions ---------- */
 
 function parseCookies(header = '') {
   return header.split(';').reduce((cookies, part) => {
@@ -147,6 +271,8 @@ function sameOrigin(req, res, next) {
   }
   next();
 }
+
+/* ---------- Booking hydration and access rules ---------- */
 
 function hydrateBooking(booking, users, updates, branches = []) {
   booking = normaliseBooking(booking);
@@ -233,6 +359,8 @@ function branchAdminsFor(users, branchId) {
   return admins.length ? admins : users.filter((user) => user.role === 'admin');
 }
 
+/* ---------- Timeline entries and booking references ---------- */
+
 async function addTimeline(store, bookingId, authorId, status, message) {
   await store.insert('booking_updates', {
     id: crypto.randomUUID(),
@@ -295,8 +423,11 @@ export function createApp(store) {
       if (!session) return next();
       const user = await store.get('users', session.sub);
       // Deactivating an account takes effect on the next request, not only at
-      // the next sign-in.
-      if (user && isActiveUser(user)) req.user = user;
+      // the next sign-in. A password reset increments `session_version`, which
+      // instantly revokes every older cookie without a session table.
+      const sessionVersion = Number(session.sv) || 0;
+      const userVersion = Number(user?.session_version) || 0;
+      if (user && isActiveUser(user) && sessionVersion === userVersion) req.user = user;
       next();
     } catch (error) {
       next(error);
@@ -349,6 +480,8 @@ export function createApp(store) {
     }
     return '';
   };
+
+  /* ---------- Authentication: register, sign in, two-factor, password ---------- */
 
   app.post(
     '/api/auth/register',
@@ -460,6 +593,186 @@ export function createApp(store) {
     json(res, 200, { user: sanitizeUser(req.user) });
   });
 
+  /* ---------- Unified self-service password recovery ---------- */
+
+  // The response is identical for a known email, an unknown email, an inactive
+  // account, and a crew record. That prevents account enumeration by anyone
+  // probing the endpoint. Delivery failures are logged server-side only.
+  app.post(
+    '/api/auth/forgot-password',
+    rateLimitAuth,
+    wrap(async (req, res) => {
+      const rawEmail = String(req.body?.email || '').trim().toLowerCase();
+      const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail) && rawEmail.length <= 160;
+      const users = emailLooksValid ? await store.list('users') : [];
+      const user = users.find(
+        (item) =>
+          String(item.email || '').toLowerCase() === rawEmail &&
+          LOGIN_ROLES.includes(item.role) &&
+          isActiveUser(item)
+      );
+
+      if (user) {
+        const now = Date.now();
+        const token = crypto.randomBytes(32).toString('base64url');
+        const tokenHash = hashOpaqueToken(token, sessionSecret);
+        const resetBase = String(APP_ORIGIN || '').replace(/\/$/, '');
+        const resetUrl = `${resetBase}/reset-password?token=${encodeURIComponent(token)}`;
+
+        // Only one link can be live at a time. Requesting another invalidates
+        // the previous one, so an old forwarded email cannot be reused.
+        const existingResets = await store.list('password_resets');
+        for (const reset of existingResets) {
+          if (reset.user_id === user.id && !reset.used_at) {
+            await store.update('password_resets', reset.id, { used_at: new Date(now).toISOString() });
+          }
+        }
+        await store.insert('password_resets', {
+          id: crypto.randomUUID(),
+          user_id: user.id,
+          token_hash: tokenHash,
+          requested_at: new Date(now).toISOString(),
+          expires_at: new Date(now + PASSWORD_RESET_TTL_MINUTES * 60 * 1000).toISOString(),
+          used_at: null,
+          requested_by_ip: requestIp(req),
+          used_by_ip: '',
+          created_at: new Date(now).toISOString(),
+        });
+
+        await audit(store, req, {
+          action: 'password_reset.requested',
+          actorId: user.id,
+          actorRole: user.role,
+          targetType: 'user',
+          targetId: user.id,
+          metadata: { matched: true },
+        });
+
+        try {
+          await sendPasswordResetEmail({
+            to: user.email,
+            name: user.name,
+            resetUrl,
+            expiresMinutes: PASSWORD_RESET_TTL_MINUTES,
+          });
+        } catch (error) {
+          // Do not tell the caller whether delivery succeeded; that would leak
+          // whether the address exists. Keep the generic response.
+          console.error('Password reset email could not be sent:', error.message);
+        }
+      } else {
+        await audit(store, req, {
+          action: 'password_reset.requested',
+          targetType: 'email',
+          metadata: { matched: false },
+        });
+      }
+
+      json(res, 200, { ok: true, message: RESET_REQUEST_MESSAGE });
+    })
+  );
+
+  // Lets the reset page show a precise invalid/expired/used message before the
+  // customer fills in a new password. It never reveals the account behind it.
+  app.post(
+    '/api/auth/reset-password/validate',
+    rateLimitAuth,
+    wrap(async (req, res) => {
+      const token = String(req.body?.token || '');
+      const reset = await findResetToken(store, token, sessionSecret);
+      if (!reset) return json(res, 400, { error: 'This reset link is invalid. Request a new one.' });
+      if (reset.used_at) {
+        return json(res, 400, { error: 'This reset link has already been used. Request a new one.' });
+      }
+      if (new Date(reset.expires_at).getTime() < Date.now()) {
+        return json(res, 400, { error: 'This reset link has expired. Request a new one.' });
+      }
+      json(res, 200, { ok: true, expires_at: reset.expires_at });
+    })
+  );
+
+  app.post(
+    '/api/auth/reset-password',
+    rateLimitAuth,
+    wrap(async (req, res) => {
+      const token = String(req.body?.token || '');
+      const password = String(req.body?.password || '');
+      const confirmation = String(req.body?.confirm_password || '');
+      const reset = await findResetToken(store, token, sessionSecret);
+
+      if (!reset || reset.used_at) {
+        await audit(store, req, {
+          action: 'password_reset.failed',
+          targetType: 'user',
+          targetId: reset?.user_id || null,
+          metadata: { reason: reset?.used_at ? 'already_used' : 'invalid_token' },
+        });
+        throw fail(400, reset?.used_at
+          ? 'This reset link has already been used. Request a new one.'
+          : 'This reset link is invalid. Request a new one.');
+      }
+      if (new Date(reset.expires_at).getTime() < Date.now()) {
+        await audit(store, req, {
+          action: 'password_reset.failed',
+          targetType: 'user',
+          targetId: reset.user_id,
+          metadata: { reason: 'expired' },
+        });
+        throw fail(400, 'This reset link has expired. Request a new one.');
+      }
+      if (password !== confirmation) throw fail(400, 'The two new passwords do not match.');
+      const weak = passwordProblem(password);
+      if (weak) throw fail(400, weak);
+
+      const user = await store.get('users', reset.user_id);
+      if (!user || !isActiveUser(user) || !LOGIN_ROLES.includes(user.role)) {
+        throw fail(400, 'This reset link is no longer valid. Request a new one.');
+      }
+      if (verifyPassword(password, user.password_hash)) {
+        throw fail(400, 'Choose a password you have not used before.');
+      }
+
+      // Consume this token first, then bump the user's session version. Any
+      // cookies issued before the reset stop matching immediately.
+      const usedAt = new Date().toISOString();
+      await store.update('password_resets', reset.id, { used_at: usedAt, used_by_ip: requestIp(req) });
+      const allResets = await store.list('password_resets');
+      for (const other of allResets) {
+        if (other.user_id === user.id && other.id !== reset.id && !other.used_at) {
+          await store.update('password_resets', other.id, { used_at: usedAt });
+        }
+      }
+      await store.update('users', user.id, {
+        password_hash: hashPassword(password),
+        session_version: (Number(user.session_version) || 0) + 1,
+        must_change_password: false,
+      });
+      clearSessionCookie(res);
+      res.clearCookie(MFA_COOKIE_NAME, { path: '/' });
+
+      await audit(store, req, {
+        action: 'password_reset.completed',
+        actorId: user.id,
+        actorRole: user.role,
+        targetType: 'user',
+        targetId: user.id,
+        metadata: { sessions_revoked: true },
+      });
+      json(res, 200, { ok: true, message: 'Your password has been changed. Sign in with the new password.' });
+    })
+  );
+
+  app.get(
+    '/api/audit-logs',
+    requireRole('admin'),
+    wrap(async (req, res) => {
+      const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+      const logs = await store.list('audit_logs');
+      logs.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      json(res, 200, { logs: logs.slice(0, limit) });
+    })
+  );
+
   app.post(
     '/api/auth/password',
     requireAuth,
@@ -531,16 +844,426 @@ export function createApp(store) {
   );
 
   // ---- Public catalog
+  /* ---------- Public catalog and health check ---------- */
+
   app.get(
     '/api/services',
+    wrap(async (req, res) => {
+      const bookingType = String(req.query.booking_type || '');
+      if (bookingType && !['event', 'pickup'].includes(bookingType)) {
+        throw fail(400, 'Choose event or pickup for the catalog.');
+      }
+      const services = await store.list('services');
+      json(res, 200, {
+        categories: CATEGORIES,
+        booking_type: bookingType || null,
+        services: services
+          .filter((service) => service.active !== false && service.catalog_visible !== false)
+          .filter((service) => !bookingType || serviceAvailableFor(service, bookingType))
+          .sort((a, b) => (a.sort || 0) - (b.sort || 0)),
+      });
+    })
+  );
+
+  /* ---------- Owner pricing console ---------- */
+
+  // Retail prices and quantity breaks, plus the client-specific rates that are
+  // deliberately kept out of the public catalog. Admin only: the client list is
+  // commercially sensitive and is never served to customers or branch heads.
+  app.get(
+    '/api/pricing',
+    requireRole('admin'),
     wrap(async (req, res) => {
       const services = await store.list('services');
       json(res, 200, {
         categories: CATEGORIES,
-        services: services
-          .filter((service) => service.active !== false)
-          .sort((a, b) => (a.sort || 0) - (b.sort || 0)),
+        client_category: CLIENT_CATEGORY,
+        services: services.sort((a, b) => (a.sort || 0) - (b.sort || 0)),
+        client_prices: CLIENT_PRICES,
+        reviews: PRICE_REVIEWS,
       });
+    })
+  );
+
+  // Creates a new, owner-managed product. Catalog sync never overwrites or
+  // retires custom rows, so a product added here survives future deployments.
+  app.post(
+    '/api/services',
+    requireRole('admin'),
+    wrap(async (req, res) => {
+      const services = await store.list('services');
+      const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ');
+      if (name.length < 2 || name.length > 80) {
+        throw fail(400, 'Product name must be between 2 and 80 characters.');
+      }
+      if (services.some((row) => serviceNameKey(row.name) === serviceNameKey(name))) {
+        throw fail(409, 'A product with that name already exists.');
+      }
+      const category = String(req.body?.category || '').trim();
+      if (!SERVICE_CATEGORY_NAMES.includes(category)) throw fail(400, 'Choose a valid category.');
+      const unit = String(req.body?.unit || '').trim();
+      if (!unit || unit.length > 40) throw fail(400, 'Enter a unit of measurement up to 40 characters.');
+      const pricingMode = String(req.body?.pricing_mode || 'fixed');
+      if (!['fixed', 'area'].includes(pricingMode)) throw fail(400, 'Choose fixed or area pricing.');
+      const availability = String(req.body?.booking_availability || 'unassigned');
+      if (!BOOKING_AVAILABILITIES.includes(availability)) {
+        throw fail(400, 'Choose pickup, event, both, or unassigned availability.');
+      }
+      const description = String(req.body?.description || '').slice(0, 500);
+      const dimensionUnit = String(req.body?.dimension_unit || 'ft');
+      if (!['ft', 'in'].includes(dimensionUnit)) throw fail(400, 'Choose feet or inches.');
+
+      const optionalInteger = (value, label) => {
+        if (value === null || value === undefined || value === '') return null;
+        const number = Number(value);
+        if (!Number.isInteger(number) || number < 1 || number > 10000) {
+          throw fail(400, `${label} must be a whole number between 1 and 10,000.`);
+        }
+        return number;
+      };
+      const optionalArea = (value) => {
+        if (value === null || value === undefined || value === '') return null;
+        const number = Number(value);
+        if (!Number.isFinite(number) || number < 0 || number > 10000) {
+          throw fail(400, 'Minimum area must be between 0 and 10,000.');
+        }
+        return number;
+      };
+      const optionalDimension = (value, label) => {
+        if (value === null || value === undefined || value === '') return null;
+        const number = Number(value);
+        if (!Number.isFinite(number) || number <= 0 || number > 1000) {
+          throw fail(400, `${label} must be a positive number up to 1,000.`);
+        }
+        return number;
+      };
+
+      const slug =
+        name
+          .normalize('NFKD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 42) || 'product';
+      let id = `custom-${slug}`;
+      let suffix = 2;
+      while (services.some((row) => row.id === id)) id = `custom-${slug}-${suffix++}`;
+
+      const now = new Date().toISOString();
+      const row = {
+        id,
+        name,
+        category,
+        description,
+        price: serviceMoney(req.body?.price, 'Price'),
+        unit,
+        pricing_mode: pricingMode,
+        min_area: optionalArea(req.body?.min_area),
+        min_qty: optionalInteger(req.body?.min_qty, 'Minimum quantity'),
+        tiers: serviceTiers(req.body?.tiers || []),
+        base_fee: serviceMoney(req.body?.base_fee || 0, 'Additional charge'),
+        dimension_unit: dimensionUnit,
+        round_dimensions_up: pricingMode === 'area' && Boolean(req.body?.round_dimensions_up),
+        min_dimension: pricingMode === 'area' ? optionalDimension(req.body?.min_dimension, 'Minimum dimension') : null,
+        max_dimension: pricingMode === 'area' ? optionalDimension(req.body?.max_dimension, 'Maximum dimension') : null,
+        image_url: '',
+        image_alt: '',
+        image_updated_at: null,
+        image_updated_by: null,
+        image_width: null,
+        image_height: null,
+        // A new product is not published until an administrator uploads its
+        // manually prepared product image.
+        catalog_visible: false,
+        capacity: Boolean(req.body?.capacity),
+        popular: Boolean(req.body?.popular),
+        booking_availability: availability,
+        addon: Boolean(req.body?.addon),
+        needs_review: Boolean(req.body?.needs_review),
+        review_note: String(req.body?.review_note || '').slice(0, 300),
+        active: req.body?.active === undefined ? true : Boolean(req.body.active),
+        sort: Math.max(0, ...services.map((service) => Number(service.sort) || 0)) + 10,
+        origin: 'custom',
+        admin_edited: true,
+        created_at: now,
+        updated_at: now,
+      };
+      const service = await store.insert('services', row);
+      json(res, 201, { service });
+    })
+  );
+
+  // Edits a retail product. The id is intentionally not editable: booking line
+  // items refer to it, and history must remain readable.
+  app.patch(
+    '/api/services/:id',
+    requireRole('admin'),
+    wrap(async (req, res) => {
+      const service = await store.get('services', req.params.id);
+      if (!service) throw fail(404, 'That service was not found.');
+
+      const money = (value, label) => {
+        const number = Number(value);
+        if (!Number.isFinite(number) || number < 0 || number > 1000000) {
+          throw fail(400, `${label} must be a number between 0 and 1,000,000.`);
+        }
+        return Math.round(number * 100) / 100;
+      };
+
+      const patch = {};
+      if (req.body?.name !== undefined) {
+        const name = String(req.body.name || '').trim().replace(/\s+/g, ' ');
+        if (name.length < 2 || name.length > 80) {
+          throw fail(400, 'Product name must be between 2 and 80 characters.');
+        }
+        const duplicate = (await store.list('services')).find(
+          (row) => row.id !== service.id && serviceNameKey(row.name) === serviceNameKey(name)
+        );
+        if (duplicate) throw fail(409, 'A product with that name already exists.');
+        patch.name = name;
+      }
+      if (req.body?.category !== undefined) {
+        const category = String(req.body.category || '').trim();
+        if (!SERVICE_CATEGORY_NAMES.includes(category)) throw fail(400, 'Choose a valid category.');
+        patch.category = category;
+      }
+      if (req.body?.description !== undefined) {
+        patch.description = String(req.body.description || '').slice(0, 500);
+      }
+      if (req.body?.unit !== undefined) {
+        const unit = String(req.body.unit || '').trim();
+        if (!unit || unit.length > 40) throw fail(400, 'Enter a unit of measurement up to 40 characters.');
+        patch.unit = unit;
+      }
+      if (req.body?.pricing_mode !== undefined) {
+        const pricingMode = String(req.body.pricing_mode);
+        if (!['fixed', 'area'].includes(pricingMode)) throw fail(400, 'Choose fixed or area pricing.');
+        patch.pricing_mode = pricingMode;
+      }
+      if (req.body?.dimension_unit !== undefined) {
+        const dimensionUnit = String(req.body.dimension_unit);
+        if (!['ft', 'in'].includes(dimensionUnit)) throw fail(400, 'Choose feet or inches.');
+        patch.dimension_unit = dimensionUnit;
+      }
+      if (req.body?.round_dimensions_up !== undefined) {
+        patch.round_dimensions_up = Boolean(req.body.round_dimensions_up);
+      }
+      for (const [key, label] of [
+        ['min_dimension', 'Minimum dimension'],
+        ['max_dimension', 'Maximum dimension'],
+      ]) {
+        if (req.body?.[key] === undefined) continue;
+        if (req.body[key] === null || req.body[key] === '') patch[key] = null;
+        else {
+          const number = Number(req.body[key]);
+          if (!Number.isFinite(number) || number <= 0 || number > 1000) {
+            throw fail(400, `${label} must be a positive number up to 1,000.`);
+          }
+          patch[key] = number;
+        }
+      }
+      if (req.body?.catalog_visible !== undefined) patch.catalog_visible = Boolean(req.body.catalog_visible);
+      if (req.body?.image_alt !== undefined) {
+        patch.image_alt = String(req.body.image_alt || '').slice(0, 180);
+      }
+      if (req.body?.booking_availability !== undefined) {
+        const availability = String(req.body.booking_availability);
+        if (!BOOKING_AVAILABILITIES.includes(availability)) {
+          throw fail(400, 'Choose pickup, event, both, or unassigned availability.');
+        }
+        patch.booking_availability = availability;
+      }
+      if (req.body?.capacity !== undefined) patch.capacity = Boolean(req.body.capacity);
+      if (req.body?.popular !== undefined) patch.popular = Boolean(req.body.popular);
+      if (req.body?.addon !== undefined) patch.addon = Boolean(req.body.addon);
+      if (req.body?.price !== undefined) patch.price = money(req.body.price, 'Price');
+      if (req.body?.base_fee !== undefined) patch.base_fee = money(req.body.base_fee, 'Setup fee');
+      if (req.body?.min_area !== undefined) {
+        if (req.body.min_area === null || req.body.min_area === '') patch.min_area = null;
+        else {
+          const area = Number(req.body.min_area);
+          if (!Number.isFinite(area) || area < 0 || area > 10000) {
+            throw fail(400, 'Minimum area must be between 0 and 10,000.');
+          }
+          patch.min_area = area;
+        }
+      }
+      if (req.body?.min_qty !== undefined) {
+        if (req.body.min_qty === null || req.body.min_qty === '') patch.min_qty = null;
+        else {
+          const qty = Number(req.body.min_qty);
+          if (!Number.isInteger(qty) || qty < 1 || qty > 10000) {
+            throw fail(400, 'Minimum quantity must be a whole number between 1 and 10,000.');
+          }
+          patch.min_qty = qty;
+        }
+      }
+      if (req.body?.active !== undefined) patch.active = Boolean(req.body.active);
+      if (req.body?.needs_review !== undefined) patch.needs_review = Boolean(req.body.needs_review);
+      if (req.body?.review_note !== undefined) {
+        patch.review_note = String(req.body.review_note || '').slice(0, 300);
+      }
+      if (req.body?.tiers !== undefined) {
+        if (!Array.isArray(req.body.tiers) || req.body.tiers.length > 12) {
+          throw fail(400, 'Price breaks must be a list of up to 12 rows.');
+        }
+        const rows = req.body.tiers
+          .map((row, index) => {
+            const min = Number(row?.min);
+            const max = row?.max === null || row?.max === undefined || row?.max === '' ? null : Number(row.max);
+            if (!Number.isInteger(min) || min < 1) {
+              throw fail(400, `Price break ${index + 1}: the minimum must be a whole number of at least 1.`);
+            }
+            if (max !== null && (!Number.isInteger(max) || max < min)) {
+              throw fail(
+                400,
+                `Price break ${index + 1}: the maximum must be a whole number at least as large as the minimum.`
+              );
+            }
+            return {
+              min,
+              max,
+              price: money(row?.price, `Price break ${index + 1} price`),
+              label: String(
+                row?.label || (max === null ? `${min}+ pcs` : `${min}\u2013${max} pcs`)
+              ).slice(0, 80),
+            };
+          })
+          .sort((a, b) => a.min - b.min);
+        for (let index = 1; index < rows.length; index += 1) {
+          if (rows[index - 1].max === null) {
+            throw fail(400, 'The open-ended price break must be last.');
+          }
+          if (rows[index].min <= rows[index - 1].max) {
+            throw fail(400, 'Price breaks cannot overlap.');
+          }
+        }
+        patch.tiers = rows;
+      }
+
+      if (!Object.keys(patch).length) throw fail(400, 'Choose a product setting to update.');
+      const nextMin = patch.min_dimension !== undefined ? patch.min_dimension : service.min_dimension;
+      const nextMax = patch.max_dimension !== undefined ? patch.max_dimension : service.max_dimension;
+      if (nextMin !== null && nextMin !== undefined && nextMax !== null && nextMax !== undefined && Number(nextMin) > Number(nextMax)) {
+        throw fail(400, 'Minimum dimension cannot be larger than maximum dimension.');
+      }
+      // Existing catalog rows predate mandatory images. Publish-gating applies
+      // when a product is being made visible again (for example after its image
+      // was removed), while saving an already-live legacy row still works.
+      if (patch.catalog_visible === true && service.catalog_visible !== true && !service.image_url) {
+        throw fail(400, 'Upload and preview an approved product image before publishing this product.');
+      }
+      if (patch.active === true && service.active === false && !service.image_url) {
+        throw fail(400, 'Upload an approved product image before reactivating this product.');
+      }
+      patch.admin_edited = true;
+      patch.updated_at = new Date().toISOString();
+      const updated = await store.update('services', service.id, patch);
+      json(res, 200, { service: updated });
+    })
+  );
+
+  /* ---------- Product image management (owner and branch heads) ---------- */
+
+  app.get(
+    '/api/product-images',
+    requireRole('admin', 'branch_admin'),
+    wrap(async (req, res) => {
+      const [services, logs] = await Promise.all([store.list('services'), store.list('audit_logs')]);
+      services.sort((a, b) => (a.sort || 0) - (b.sort || 0));
+      const missing = services.filter((service) => !service.image_url).length;
+      json(res, 200, {
+        categories: CATEGORIES,
+        services,
+        stats: {
+          total: services.length,
+          with_image: services.length - missing,
+          missing,
+          visible: services.filter((service) => service.active !== false && service.catalog_visible !== false).length,
+        },
+        recent_changes: logs
+          .filter((log) => String(log.action || '').startsWith('product_image.'))
+          .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+          .slice(0, 30),
+      });
+    })
+  );
+
+  app.post(
+    '/api/services/:id/image',
+    requireRole('admin', 'branch_admin'),
+    express.raw({ type: ['image/jpeg', 'image/png', 'image/webp', 'image/jpg', 'image/pjpeg'], limit: '4mb' }),
+    wrap(async (req, res) => {
+      const service = await store.get('services', req.params.id);
+      if (!service) throw fail(404, 'That product was not found.');
+      if (!Buffer.isBuffer(req.body) || !req.body.length) {
+        throw fail(415, 'Upload a JPG, PNG, or WEBP image file.');
+      }
+      const image = inspectProductImage(req.body, req.get('content-type') || '');
+      const alt = String(req.query.alt || service.image_alt || `${service.name} product image`).trim().slice(0, 180);
+      const newPath = await saveProductImage(req.body, image);
+      const previous = service.image_url;
+      let updated;
+      try {
+        updated = await store.update('services', service.id, {
+          image_url: newPath,
+          image_alt: alt,
+          image_width: image.width,
+          image_height: image.height,
+          image_updated_at: new Date().toISOString(),
+          image_updated_by: req.user.id,
+          catalog_visible: true,
+          admin_edited: true,
+          updated_at: new Date().toISOString(),
+        });
+      } catch (error) {
+        // Keep the old image in place if the database write fails.
+        await removeProductImage(newPath);
+        throw error;
+      }
+      if (previous && previous !== newPath) await removeProductImage(previous).catch(() => {});
+      await audit(store, req, {
+        action: previous ? 'product_image.replaced' : 'product_image.uploaded',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'service',
+        targetId: service.id,
+        metadata: { product: service.name, previous_image: previous || '', new_image: newPath, width: image.width, height: image.height },
+      });
+      json(res, 200, { service: updated });
+    })
+  );
+
+  app.delete(
+    '/api/services/:id/image',
+    requireRole('admin', 'branch_admin'),
+    wrap(async (req, res) => {
+      const service = await store.get('services', req.params.id);
+      if (!service) throw fail(404, 'That product was not found.');
+      if (!service.image_url) throw fail(400, 'This product does not have an image to remove.');
+      const previous = service.image_url;
+      const updated = await store.update('services', service.id, {
+        image_url: '',
+        image_alt: '',
+        image_width: null,
+        image_height: null,
+        image_updated_at: new Date().toISOString(),
+        image_updated_by: req.user.id,
+        catalog_visible: false,
+        admin_edited: true,
+        updated_at: new Date().toISOString(),
+      });
+      await removeProductImage(previous).catch((error) => console.error('Old product image could not be deleted:', error.message));
+      await audit(store, req, {
+        action: 'product_image.removed',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'service',
+        targetId: service.id,
+        metadata: { product: service.name, previous_image: previous },
+      });
+      json(res, 200, { service: updated });
     })
   );
 
@@ -575,6 +1298,8 @@ export function createApp(store) {
     })
   );
 
+  /* ---------- Bookings: create, edit, cancel, record payments ---------- */
+
   app.post(
     '/api/bookings',
     requireRole('customer', 'admin'),
@@ -590,10 +1315,21 @@ export function createApp(store) {
         throw fail(400, 'Add at least one item to your booking.');
       }
 
+      // Price against the stored catalog, not a hard-coded copy: an owner edit
+      // from the Pricing page must apply to the next booking immediately.
+      const catalogServices = await store.list('services');
       const items = [];
       for (const raw of rawItems) {
-        const service = findService(String(raw?.service_id || ''));
+        const service = catalogServices.find(
+          (row) => row.id === String(raw?.service_id || '') && row.active !== false
+        );
         if (!service) throw fail(400, 'One of the selected services is no longer available.');
+        if (!serviceAvailableFor(service, bookingType)) {
+          throw fail(
+            400,
+            `${service.name} is not available for ${bookingType === 'pickup' ? 'pickup' : 'event'} bookings.`
+          );
+        }
         try {
           items.push(priceLine(service, raw));
         } catch (error) {
@@ -1012,6 +1748,8 @@ export function createApp(store) {
   );
 
   // ---- Availability for a branch and time window
+  /* ---------- Availability and the in-app assistant ---------- */
+
   app.get(
     '/api/availability',
     requireAuth,
@@ -1034,9 +1772,17 @@ export function createApp(store) {
       const branches = await store.list('branches');
       if (!branches.some((branch) => branch.id === branchId)) throw fail(400, 'Choose a valid branch.');
 
-      const services = serviceIds.map((id) => findService(id)).filter(Boolean);
+      const catalogServices = await store.list('services');
+      const services = serviceIds
+        .map((id) => catalogServices.find((service) => service.id === id))
+        .filter(Boolean);
       const units = capacityUnits(
-        services.map((service) => ({ service_id: service.id, qty: 1, category: service.category }))
+        services.map((service) => ({
+          service_id: service.id,
+          qty: 1,
+          category: service.category,
+          capacity: service.capacity === true,
+        }))
       );
       const bookings = await store.list('bookings');
       const availability = checkCapacity(bookings, { date, branchId, start, hours, units });
@@ -1057,6 +1803,8 @@ export function createApp(store) {
   );
 
   // ---- Customer discounts
+  /* ---------- Discounts ---------- */
+
   app.get(
     '/api/discounts/mine',
     requireAuth,
@@ -1178,6 +1926,8 @@ export function createApp(store) {
   );
 
   // ---- Branches
+  /* ---------- Branches and notifications ---------- */
+
   app.get(
     '/api/branches',
     requireAuth,
@@ -1216,6 +1966,8 @@ export function createApp(store) {
   );
 
   // ---- Studio accounts: the owner and the two branch heads
+  /* ---------- Studio accounts (owner only) ---------- */
+
   app.get(
     '/api/accounts',
     requireRole('admin'),
@@ -1335,6 +2087,8 @@ export function createApp(store) {
   );
 
   // ---- Crew records (assignable people, no sign-in)
+  /* ---------- Crew records (assignment only, never sign-ins) ---------- */
+
   app.get(
     '/api/staff',
     requireRole('admin', 'branch_admin'),
@@ -1417,6 +2171,8 @@ export function createApp(store) {
     })
   );
 
+  /* ---------- Reports and CSV export ---------- */
+
   app.get(
     '/api/reports',
     requireRole('admin'),
@@ -1455,6 +2211,18 @@ export function createApp(store) {
   );
 
   // ---- Pages and static assets
+  // Uploaded product photos are served from their own directory with immutable
+  // cache headers. Every upload gets a new filename, so replacing a photo can
+  // never leave a stale cached image in the customer catalog.
+  app.use(
+    '/uploads/products',
+    express.static(UPLOAD_DIR, {
+      index: false,
+      maxAge: IS_PROD ? '30d' : 0,
+      immutable: IS_PROD,
+      setHeaders(res) { res.setHeader('X-Content-Type-Options', 'nosniff'); },
+    })
+  );
   app.use(
     express.static(PUBLIC_DIR, {
       index: false,
@@ -1466,6 +2234,8 @@ export function createApp(store) {
     })
   );
   // The system opens on sign-up; the marketing page stays at /welcome.
+  /* ---------- Page routes and the 404 fallback ---------- */
+
   app.get('/', (req, res) => {
     if (req.user) return res.redirect('/app');
     res.redirect('/login?mode=register');
@@ -1475,6 +2245,8 @@ export function createApp(store) {
     if (req.user) return res.redirect('/app');
     res.sendFile(path.join(PUBLIC_DIR, 'auth.html'));
   });
+  app.get('/forgot-password', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'forgot-password.html')));
+  app.get('/reset-password', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reset-password.html')));
   app.get('/app', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'app.html')));
   app.use((req, res) => {
     if (req.path.startsWith('/api/')) return json(res, 404, { error: 'Not found.' });

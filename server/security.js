@@ -1,3 +1,13 @@
+/**
+ * Security primitives: passwords, signed session cookies, and TOTP two-factor.
+ *
+ * Everything here is pure and side-effect free except `loadSessionSecret`,
+ * which creates the local secret file once. Nothing in this module logs a
+ * password, a hash, a session token, or a two-factor secret.
+ *
+ * Session cookies are stateless: a base64url payload signed with HMAC-SHA256.
+ * They carry only a user id, role, and expiry — never a password or profile.
+ */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,6 +22,11 @@ export const MFA_CHALLENGE_MS = 5 * 60 * 1000;
 export const PASSWORD_RULES =
   'Use at least 10 characters, including an uppercase letter, a lowercase letter, a number, and a symbol.';
 
+/**
+ * Returns a human-readable problem message, or '' when the password is fine.
+ * One function for every role keeps the rule identical for customers, branch
+ * heads, and the owner.
+ */
 export function passwordProblem(password) {
   const value = String(password ?? '');
   if (value.length < 10 || value.length > 128) return PASSWORD_RULES;
@@ -22,12 +37,17 @@ export function passwordProblem(password) {
   return '';
 }
 
+/**
+ * Hashes with scrypt and a fresh 16-byte salt. The stored format is
+ * `scrypt:<salt hex>:<hash hex>` so the algorithm can be upgraded later.
+ */
 export function hashPassword(password) {
   const salt = crypto.randomBytes(16);
   const hash = crypto.scryptSync(password, salt, 64);
   return `scrypt:${salt.toString('hex')}:${hash.toString('hex')}`;
 }
 
+/** Constant-time comparison of a candidate password against a stored hash. */
 export function verifyPassword(password, stored) {
   if (typeof stored !== 'string') return false;
   const [scheme, saltHex, hashHex] = stored.split(':');
@@ -37,6 +57,11 @@ export function verifyPassword(password, stored) {
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
+/**
+ * Returns the cookie-signing secret. Priority: SESSION_SECRET from the
+ * environment, then `DATA_DIR/session.secret`, generated on first run with
+ * owner-only permissions. Rotating it signs every session out.
+ */
 export function loadSessionSecret(dataDir) {
   if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
   fs.mkdirSync(dataDir, { recursive: true });
@@ -47,20 +72,41 @@ export function loadSessionSecret(dataDir) {
   return secret;
 }
 
+/** Builds the signed session cookie value for an authenticated user. */
 export function createSessionToken(user, secret) {
   const payload = Buffer.from(
-    JSON.stringify({ sub: user.id, role: user.role, exp: Date.now() + SESSION_MS })
+    JSON.stringify({
+      sub: user.id,
+      role: user.role,
+      sv: Number(user.session_version) || 0,
+      exp: Date.now() + SESSION_MS,
+    })
   ).toString('base64url');
   const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
   return `${payload}.${signature}`;
 }
 
+/**
+ * One-way hash used for password-reset links. The session secret acts as a
+ * pepper, so a copied database hash alone cannot be turned back into a token.
+ * Never store or log the original token.
+ */
+export function hashOpaqueToken(token, secret) {
+  return crypto.createHmac('sha256', secret).update(String(token || '')).digest('base64url');
+}
+
+/** Verifies a session cookie; returns its payload, or null if invalid/expired. */
 export function readSessionToken(token, secret) {
   const data = readSignedToken(token, secret);
   if (!data || !data.sub || !data.exp) return null;
   return data;
 }
 
+/**
+ * Shared signature check for the session and MFA cookies: recompute the HMAC,
+ * compare in constant time, then enforce the expiry. Any failure returns null
+ * rather than throwing, so callers can treat a bad cookie as "signed out".
+ */
 function readSignedToken(token, secret) {
   if (!token || typeof token !== 'string' || !token.includes('.')) return null;
   const [payload, signature] = token.split('.');
@@ -93,6 +139,10 @@ export function readMfaChallenge(token, secret) {
   return data;
 }
 
+/**
+ * Writes the session cookie. `httpOnly` keeps it out of JavaScript, `sameSite:
+ * lax` blocks cross-site POSTs, and `secure` is on in production (HTTPS only).
+ */
 export function setSessionCookie(res, token, secure) {
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
@@ -118,6 +168,10 @@ export function clearSessionCookie(res) {
   res.clearCookie(MFA_COOKIE_NAME, { path: '/' });
 }
 
+/**
+ * The only shape of a user that may leave the server. Strips `password_hash`,
+ * `mfa_secret`, and every other internal column.
+ */
 export function sanitizeUser(user) {
   if (!user) return null;
   return {
@@ -174,10 +228,16 @@ function base32Decode(input) {
   return Buffer.from(bytes);
 }
 
+/** Creates a fresh base32 secret for a user enrolling in two-factor. */
 export function newTotpSecret() {
   return base32Encode(crypto.randomBytes(20));
 }
 
+/**
+ * The six-digit code for a given moment. TOTP is an HMAC over the 30-second
+ * time step, truncated to six digits (RFC 6238), matching Google
+ * Authenticator, Authy, and 1Password.
+ */
 export function totpAt(secret, timestamp = Date.now()) {
   const counter = Math.floor(timestamp / 1000 / 30);
   const key = base32Decode(secret);
@@ -201,6 +261,7 @@ export function verifyTotp(secret, token, window = 1) {
   return false;
 }
 
+/** The `otpauth://` URL encoded into the enrollment QR code. */
 export function otpauthUrl(secret, email) {
   const label = encodeURIComponent(`Precious Moments:${email}`);
   const query = new URLSearchParams({

@@ -1,3 +1,13 @@
+/**
+ * Seed data: the branches, the studio accounts, and the demo bookings.
+ *
+ * Written with fixed ids (for example `branch-batangas`) so repeated runs and
+ * the smoke tests refer to the same records. Dates are relative to "today" so a
+ * fresh checkout always has a bookable week ahead of it.
+ *
+ * Demo customers and bookings are only inserted when the store decides it needs
+ * them (local mode), never into a production Supabase database.
+ */
 import { SERVICES, priceLine } from './catalog.js';
 import { hashPassword } from './security.js';
 
@@ -16,6 +26,7 @@ const at = (offset, hour = 10) => {
 };
 const line = (id, input) => priceLine(SERVICES.find((s) => s.id === id), input);
 
+/** The two physical branches. Coordinates drive automatic booking routing. */
 export const SEED_BRANCHES = [
   {
     id: 'branch-batangas',
@@ -143,10 +154,7 @@ export function buildSeed() {
 
   const services = SERVICES.map((service) => ({
     ...service,
-    min_area: service.min_area ?? null,
-    min_qty: service.min_qty ?? null,
-    popular: service.popular ?? false,
-    active: true,
+    active: service.active !== false,
     created_at: at(-500, 8),
   }));
 
@@ -168,7 +176,7 @@ export function buildSeed() {
       payment_method: '',
       payment_ref: '',
       amount_paid: 0,
-      total: 4100,
+      total: 4700,
       paid_at: null,
       booking_type: 'event',
       duration_hours: 3,
@@ -178,7 +186,7 @@ export function buildSeed() {
       discount_amount: 0,
       discount_label: '',
       discount_id: null,
-      items: [line('photobooth-strips', { qty: 1 }), line('tarpaulin', { width_ft: 4, height_ft: 6 })],
+      items: [line('photobooth-strips', { qty: 1 }), line('tarpaulin', { qty: 1 })],
       created_at: at(-2, 9),
       updated_at: at(-2, 9),
     },
@@ -198,8 +206,8 @@ export function buildSeed() {
       payment_status: 'deposit_paid',
       payment_method: 'GCash',
       payment_ref: 'GC-884201',
-      amount_paid: 4750,
-      total: 9500,
+      amount_paid: 7000,
+      total: 14000,
       paid_at: at(-5, 13),
       items: [line('photo', { qty: 1 }), line('video', { qty: 1 })],
       created_at: at(-9, 10),
@@ -221,8 +229,8 @@ export function buildSeed() {
       payment_status: 'paid',
       payment_method: 'Bank transfer',
       payment_ref: 'BPI-091823',
-      amount_paid: 4100,
-      total: 4100,
+      amount_paid: 4160,
+      total: 4160,
       paid_at: at(-1, 18),
       items: [line('photobooth-4r-magnetic', { qty: 1 }), line('mug', { qty: 4 })],
       created_at: at(-24, 14),
@@ -244,13 +252,13 @@ export function buildSeed() {
       payment_status: 'paid',
       payment_method: 'Cash',
       payment_ref: 'CASH-1024',
-      amount_paid: 7450,
-      total: 7450,
+      amount_paid: 8240,
+      total: 8240,
       paid_at: at(-3, 11),
       items: [
         line('panaflex-lit', { width_ft: 2, height_ft: 2 }),
-        line('tarpaulin', { width_ft: 6, height_ft: 3 }),
-        line('shirt-dtf', { qty: 20 }),
+        line('tarpaulin-2x6', { qty: 1 }),
+        line('shirt-az-yalex-bc-sl', { qty: 20 }),
       ],
       created_at: at(-12, 15),
       updated_at: at(-3, 11),
@@ -271,8 +279,8 @@ export function buildSeed() {
       payment_status: 'paid',
       payment_method: 'GCash',
       payment_ref: 'GC-771904',
-      amount_paid: 4200,
-      total: 4200,
+      amount_paid: 5200,
+      total: 5200,
       paid_at: at(-30, 16),
       items: [line('photo', { qty: 1 }), line('magnet', { qty: 20 })],
       created_at: at(-55, 10),
@@ -317,8 +325,8 @@ export function buildSeed() {
       payment_status: 'deposit_paid',
       payment_method: 'GCash',
       payment_ref: 'GC-902144',
-      amount_paid: 6500,
-      total: 13000,
+      amount_paid: 4875,
+      total: 9750,
       paid_at: at(-4, 12),
       items: [line('booth-mirror', { qty: 1 }), line('invitation', { qty: 50 })],
       created_at: at(-14, 9),
@@ -340,12 +348,12 @@ export function buildSeed() {
       payment_status: 'deposit_paid',
       payment_method: 'Cash',
       payment_ref: 'CASH-1028',
-      amount_paid: 1800,
-      total: 3600,
+      amount_paid: 2070,
+      total: 4140,
       paid_at: at(-1, 10),
       items: [
-        line('tarpaulin', { width_ft: 8, height_ft: 4 }),
-        line('shirt-vinyl', { qty: 10 }),
+        line('tarpaulin-2x6', { qty: 1 }),
+        line('shirt-az-yalex-bc-sl', { qty: 10 }),
       ],
       created_at: at(-6, 17),
       updated_at: at(-1, 10),

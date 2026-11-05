@@ -1,3 +1,13 @@
+/**
+ * Sign-in / sign-up page (`/login`).
+ *
+ * Handles three panels in one document: create an account, sign in, and the
+ * six-digit two-factor step. All validation here is for fast feedback only —
+ * the server validates every field again and is the real authority.
+ *
+ * `?next=` is honoured after a successful sign-in, but only for local paths
+ * (see `nextUrl`), so the page cannot be used as an open redirect.
+ */
 import { api, getCurrentUser } from './api.js';
 
 const errorBox = document.getElementById('auth-error');
@@ -14,10 +24,16 @@ const panels = {
   mfa: document.getElementById('panel-mfa'),
 };
 
+/* ---------- Where to go after signing in ---------- */
+
+// Only a same-site path is accepted. `//evil.example` is rejected too, because
+// a browser treats a leading double slash as another origin.
 const params = new URLSearchParams(window.location.search);
 const rawNext = params.get('next') || '';
 const nextUrl =
   rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/login') ? rawNext : '/app';
+
+/* ---------- Password policy, mirrored from server/security.js ---------- */
 
 const PASSWORD_RULES = [
   { key: 'length', label: 'At least 10 characters', test: (value) => value.length >= 10 },
@@ -43,6 +59,13 @@ function paintRules(value) {
   }
 }
 
+/* ---------- Panel switching and inline feedback ---------- */
+
+/**
+ * Switches between the sign-in and sign-up panels, updates the document title,
+ * keeps the tab ARIA state in sync, and optionally moves focus to the first
+ * field. The MFA panel is only ever shown by `showMfa`.
+ */
 function setTab(mode, { focus = false } = {}) {
   const active = mode === 'login' ? 'login' : 'register';
   const tabBar = document.querySelector('.auth-tabs');
@@ -82,6 +105,7 @@ function setTab(mode, { focus = false } = {}) {
   }
 }
 
+/** Replaces both tabs with the two-factor code step after a correct password. */
 function showMfa() {
   tabs.forEach((tab) => {
     tab.hidden = true;
@@ -102,11 +126,6 @@ document.addEventListener('click', (event) => {
   if (tab) return setTab(tab.dataset.tab);
   if (target.closest('[data-switch-login]')) return setTab('login', { focus: true });
   if (target.closest('[data-switch-register]')) return setTab('register', { focus: true });
-  if (target.closest('[data-forgot-password]')) {
-    const note = document.querySelector('[data-forgot-note]');
-    if (note) note.hidden = !note.hidden;
-    return;
-  }
   if (target.closest('[data-mfa-cancel]')) {
     api('/api/auth/logout', { method: 'POST', body: '{}' }).finally(() => {
       window.location.assign('/login?mode=login');
@@ -139,6 +158,9 @@ document.getElementById('register-password')?.addEventListener('input', (event) 
   paintRules(event.target.value);
 });
 
+/* ---------- Client-side validation ---------- */
+
+/** Returns an error message for an incomplete sign-in, or '' when it may post. */
 function validateLogin() {
   const email = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
@@ -147,6 +169,7 @@ function validateLogin() {
   return '';
 }
 
+/** Checks the sign-up fields, including every password rule. */
 function validateRegister() {
   const name = document.getElementById('register-name').value.trim();
   const email = document.getElementById('register-email').value.trim();
@@ -157,6 +180,10 @@ function validateRegister() {
   return '';
 }
 
+/**
+ * Disables a form's submit button while a request is running and restores its
+ * original label afterwards, preventing double submissions.
+ */
 function setBusy(form, busy, label) {
   const button = form.querySelector('[data-submit]');
   if (!button) return;
@@ -169,6 +196,8 @@ function setBusy(form, busy, label) {
     button.disabled = false;
   }
 }
+
+/* ---------- Form submissions ---------- */
 
 loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -234,11 +263,30 @@ registerForm.addEventListener('submit', async (event) => {
   }
 });
 
+/* ---------- Boot ---------- */
+
 // Sign-up is the default arrival; explicit links still open sign-in.
 const initial =
   params.get('mode') === 'login' || window.location.hash === '#login' ? 'login' : 'register';
 setTab(initial);
 paintRules(document.getElementById('register-password')?.value || '');
+
+/* ---------- Session-expired notice and connectivity ---------- */
+
+// `/login?...&expired=1` is where the dashboard sends a signed-out session. The
+// message explains why they are back here, and `?next=` takes them to the page
+// they were on. The draft they were writing is restored by the dashboard.
+if (params.get('expired') === '1') {
+  setTab('login');
+  setError('Your session ended to keep your account safe. Sign in again and we will take you back to where you were.');
+}
+
+// The forms cannot succeed without a connection; say so before the attempt
+// rather than failing with a generic network message.
+window.addEventListener('offline', () => {
+  setError("You're offline. Reconnect to sign in or create an account.");
+});
+window.addEventListener('online', () => setError(''));
 
 getCurrentUser()
   .then((user) => {
