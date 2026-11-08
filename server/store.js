@@ -126,9 +126,23 @@ function createSupabaseStore() {
   return {
     mode: 'supabase',
     async list(name) {
-      const { data, error } = await client.from(table(name)).select('*').limit(10000);
-      fail(error, `select ${name}`);
-      return data || [];
+      // Supabase/PostgREST caps a single response. Walking ordered pages keeps
+      // large booking histories complete instead of silently stopping at
+      // 10,000 rows; ordering makes the page boundaries deterministic.
+      const pageSize = 1000;
+      const rows = [];
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await client
+          .from(table(name))
+          .select('*')
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1);
+        fail(error, `select ${name}`);
+        if (!data?.length) break;
+        rows.push(...data);
+        if (data.length < pageSize) break;
+      }
+      return rows;
     },
     async get(name, id) {
       const { data, error } = await client.from(table(name)).select('*').eq('id', id).maybeSingle();

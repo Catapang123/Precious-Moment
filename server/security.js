@@ -261,6 +261,59 @@ export function verifyTotp(secret, token, window = 1) {
   return false;
 }
 
+/* ---------- Two-factor secret encryption at rest ---------- */
+
+const MFA_SECRET_PREFIX = 'enc:v1:';
+
+/** True when a stored factor secret is already encrypted. */
+export function isEncryptedMfaSecret(value) {
+  return String(value || '').startsWith(MFA_SECRET_PREFIX);
+}
+
+// The key is derived from the same server secret that signs sessions, so no
+// extra credential has to be distributed. Rotating SESSION_SECRET deliberately
+// invalidates existing factors; the owner can reset a customer's 2FA.
+function mfaKey(secret) {
+  return crypto.createHash('sha256').update(`pm-mfa:${String(secret)}`).digest();
+}
+
+/**
+ * Encrypts a TOTP secret with AES-256-GCM before it is stored. The database
+ * holds only iv:tag:ciphertext, never the base32 value needed to generate codes.
+ * Legacy plaintext values are returned unchanged so existing accounts keep
+ * working and can be upgraded on their next successful sign-in.
+ */
+export function encryptMfaSecret(secret, keySecret) {
+  if (!secret || isEncryptedMfaSecret(secret)) return secret;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', mfaKey(keySecret), iv);
+  const encrypted = Buffer.concat([cipher.update(String(secret), 'utf8'), cipher.final()]);
+  return `${MFA_SECRET_PREFIX}${iv.toString('base64url')}:${cipher.getAuthTag().toString('base64url')}:${encrypted.toString('base64url')}`;
+}
+
+/** Decrypts a stored factor secret; returns '' when the value cannot be read. */
+export function decryptMfaSecret(value, keySecret) {
+  const raw = String(value || '');
+  if (!raw) return '';
+  if (!isEncryptedMfaSecret(raw)) return raw;
+  const [ivPart, tagPart, dataPart] = raw.slice(MFA_SECRET_PREFIX.length).split(':');
+  if (!ivPart || !tagPart || !dataPart) return '';
+  try {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      mfaKey(keySecret),
+      Buffer.from(ivPart, 'base64url')
+    );
+    decipher.setAuthTag(Buffer.from(tagPart, 'base64url'));
+    return Buffer.concat([
+      decipher.update(Buffer.from(dataPart, 'base64url')),
+      decipher.final(),
+    ]).toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
 /** The `otpauth://` URL encoded into the enrollment QR code. */
 export function otpauthUrl(secret, email) {
   const label = encodeURIComponent(`Precious Moments:${email}`);

@@ -5,7 +5,7 @@ services:
     plan: free
     buildCommand: npm ci
     startCommand: npm start
-    healthCheckPath: /api/health
+    healthCheckPath: /api/ready
     envVars:
       - key: NODE_ENV
         value: production
@@ -19,6 +19,10 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      - key: TRUST_PROXY
+        value: '1'
       - key: RESEND_API_KEY
         sync: false
       - key: MAIL_FROM

@@ -6,14 +6,20 @@
  * writes a uniquely named file. Uploaded filenames never come from the client,
  * so a request cannot traverse directories or replace another product's image.
  *
- * Storage is deliberately a plain directory. On a host without a persistent
- * disk, set UPLOAD_DIR to one. The database stores only the public path and
- * metadata, never the bytes.
+ * Local development writes to UPLOAD_DIR. Production writes to a public
+ * Supabase Storage bucket, because the Render free filesystem is ephemeral.
+ * The database stores only the public URL and metadata, never the bytes.
  */
+import { createClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { UPLOAD_DIR } from './config.js';
+import {
+  SUPABASE_SERVICE_ROLE_KEY,
+  SUPABASE_STORAGE_BUCKET,
+  SUPABASE_URL,
+  UPLOAD_DIR,
+} from './config.js';
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 export const MIN_IMAGE_SIDE = 300;
@@ -30,6 +36,26 @@ const FORMATS = {
   'image/png': { extension: 'png', label: 'PNG' },
   'image/webp': { extension: 'webp', label: 'WEBP' },
 };
+
+let storageClient = null;
+
+function usesRemoteStorage() {
+  return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY && SUPABASE_STORAGE_BUCKET);
+}
+
+function getStorageClient() {
+  if (!usesRemoteStorage()) return null;
+  if (!storageClient) {
+    storageClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+  }
+  return storageClient;
+}
+
+function storagePrefix() {
+  return `${SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/`;
+}
 
 function fail(message) {
   const error = new Error(message);
@@ -159,10 +185,23 @@ export function inspectProductImage(buffer, declaredMime = '') {
   };
 }
 
-/** Writes a validated image and returns its public path. */
+/** Writes a validated image and returns its public URL. */
 export async function saveProductImage(buffer, image) {
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const filename = `${crypto.randomUUID()}.${image.extension}`;
+  const client = getStorageClient();
+  if (client) {
+    const { error } = await client.storage.from(SUPABASE_STORAGE_BUCKET).upload(filename, buffer, {
+      contentType: image.mime,
+      cacheControl: '31536000',
+      upsert: false,
+    });
+    if (error) throw new Error(`Image storage failed: ${error.message}`);
+    const { data } = client.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(filename);
+    if (!data?.publicUrl) throw new Error('Image storage did not return a public URL.');
+    return data.publicUrl;
+  }
+
+  await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const target = path.join(UPLOAD_DIR, filename);
   const temporary = `${target}.${crypto.randomUUID()}.tmp`;
   try {
@@ -175,17 +214,21 @@ export async function saveProductImage(buffer, image) {
   return `/uploads/products/${filename}`;
 }
 
-/** Deletes only files this app created under /uploads/products/. */
+/** Deletes only images this app created, in local storage or its own bucket. */
 export async function removeProductImage(publicPath) {
   const value = String(publicPath || '');
+  const prefix = storagePrefix();
+  if (usesRemoteStorage() && value.startsWith(prefix)) {
+    const key = decodeURIComponent(value.slice(prefix.length));
+    if (!/^[a-f0-9-]+\.(jpg|jpeg|png|webp)$/i.test(key)) return;
+    const { error } = await getStorageClient().storage.from(SUPABASE_STORAGE_BUCKET).remove([key]);
+    if (error) throw new Error(`Image storage delete failed: ${error.message}`);
+    return;
+  }
   if (!value.startsWith('/uploads/products/')) return;
   const filename = path.basename(value);
   if (!/^[a-f0-9-]+\.(jpg|jpeg|png|webp)$/i.test(filename)) return;
   await fs.unlink(path.join(UPLOAD_DIR, filename)).catch((error) => {
     if (error.code !== 'ENOENT') throw error;
   });
-}
-
-export function isUploadedProductImage(publicPath) {
-  return String(publicPath || '').startsWith('/uploads/products/');
 }

@@ -5,8 +5,8 @@ request dates and follow their bookings, the owner and two branch heads run the 
 and the counter, and crew are assignment records rather than login accounts.
 
 Built with plain **HTML, CSS, and JavaScript** on the front end, **Node.js / Express**
-for the web API, **Python** for scheduled reporting, and **Supabase** (Postgres) for
-production data.
+for the web API, **Python** for scheduled reporting, and **Supabase** (Postgres and
+Storage) for production data and product images.
 
 ---
 
@@ -152,7 +152,8 @@ new-booking catalog by the measured Tarpaulin product.
 **Product images.** Main Admin and Branch Admin share one Product images screen. Either
 role can upload, preview, replace, or remove a product image for any product. Files are
 validated as JPG, PNG, or WEBP by magic bytes and dimensions (minimum 300 × 300, maximum
-4 MB), saved under a unique name, and audited with the actor and timestamp. The old
+4 MB), saved under a unique name to Supabase Storage in production (local disk in
+development), and audited with the actor and timestamp. The old
 image stays live until the replacement database write succeeds. Removing an image hides
 that product from the customer catalog. New products start hidden until an image is
 uploaded. Existing catalog rows predate the image requirement and remain visible during
@@ -245,6 +246,7 @@ npm ci
    SESSION_SECRET=<a long random string>
    SUPABASE_URL=https://<project>.supabase.co
    SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+   SUPABASE_STORAGE_BUCKET=product-images
    SEED_DEMO=false
    ```
 
@@ -274,17 +276,19 @@ accounts are created.
 | --------------------------- | ----------------------- | ------------------------------------------------ |
 | `PORT`                      | `3000`                  | HTTP port                                        |
 | `NODE_ENV`                  | `development`           | `production` enables secure cookies and HSTS     |
-| `SESSION_SECRET`            | generated in `data/`    | Signs session and MFA challenge cookies          |
+| `SESSION_SECRET`            | generated in `data/`    | Signs cookies and encrypts stored TOTP secrets   |
 | `DATA_DIR`                  | `data`                  | Local store and generated secret                 |
 | `APP_ORIGIN`                | `http://localhost:3000` | Canonical public origin                          |
 | `SUPABASE_URL`              | —                       | Supabase project URL                             |
 | `SUPABASE_SERVICE_ROLE_KEY` | —                       | Server-side database key                         |
+| `SUPABASE_STORAGE_BUCKET`   | `product-images`        | Public Storage bucket for product images; required in production |
+| `TRUST_PROXY`               | `0`                     | Set to `1` behind one trusted proxy (Render)     |
 | `SEED_DEMO`                 | `false`                 | Test fixtures only; never enable in production   |
 | `GEOCODER_URL`              | Nominatim search URL    | Address → coordinates service                     |
 | `GEOCODER_ENABLED`          | `true`                  | Set `false` to force routed events into review    |
 | `BRANCH_TIE_KM`             | `0.25`                  | Branches closer than this send a booking to review |
 | `MAX_SIMULTANEOUS_SERVICES` | `5`                     | Booth/crew services allowed in one time window   |
-| `UPLOAD_DIR`                | `public/uploads/products` | Persistent directory for uploaded product images |
+| `UPLOAD_DIR`                | `public/uploads/products` | Local image fallback when Supabase Storage is not configured |
 | `PASSWORD_RESET_TTL_MINUTES` | `30`                   | Lifetime of a single-use reset link              |
 | `RESEND_API_KEY`            | —                       | Sends password-reset email through Resend        |
 | `MAIL_FROM`                 | `Precious Moments <no-reply@preciousmoments.ph>` | Verified sender for reset email |
@@ -334,7 +338,13 @@ for the automated test suite and offline development; use Supabase for the real 
   etc.). After enrollment, sign-in requires the 6-digit code, which is verified before a
   session cookie is issued. The challenge cookie lives five minutes and cannot act as a
   session.
-- The owner can clear a lost authenticator by resetting that account.
+- TOTP secrets are encrypted at rest with AES-256-GCM using a key derived from
+  `SESSION_SECRET`; a database dump does not expose usable factors. Legacy plaintext
+  factors are upgraded on the next successful sign-in. Rotating `SESSION_SECRET`
+  invalidates existing factors, so those accounts need a 2FA reset.
+- The owner can clear a lost authenticator from **Team** (account reset) or from the
+  customer's booking drawer (**Reset 2FA**). The narrow reset clears only the factor,
+  keeps the password, and revokes existing sessions.
 
 Other security notes:
 
@@ -372,10 +382,12 @@ The repository includes a [Render blueprint](render.yaml).
 
 1. Push the repository to GitHub.
 2. In Render, choose **New → Blueprint** and select the repository. Render reads
-   `render.yaml` and creates a Node web service with a health check at `/api/health`.
-3. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `APP_ORIGIN` (the public Render
-   URL), `RESEND_API_KEY`, and `MAIL_FROM` (a sender on a domain verified in Resend)
-   in the service's environment. `SESSION_SECRET` is generated by Render.
+   `render.yaml` and creates a Node web service with a health check at `/api/ready` (liveness is `/api/health`).
+3. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`,
+   `APP_ORIGIN` (the public Render URL), `RESEND_API_KEY`, and `MAIL_FROM` (a sender on
+   a domain verified in Resend) in the service's environment. `SESSION_SECRET` is
+   generated by Render, and `TRUST_PROXY=1` is set in the blueprint. Production refuses
+   to start if a required variable is missing.
 4. Deploy. The first request seeds the service catalog if needed, and later releases
    add new products without changing existing rows.
 
@@ -405,8 +417,8 @@ server/geo.js             Address geocoding and nearest-branch assignment
 server/store.js           Supabase (pm_ tables) or local JSON data layer
 server/seed.js            Catalog seed and test fixtures
 server/catalog.js         Products, services, and pricing rules
-server/security.js        scrypt, password policy, sessions, TOTP two-factor
-server/images.js          Product-image validation and disk storage
+server/security.js        scrypt, password policy, sessions, TOTP, secret encryption
+server/images.js          Product-image validation and Supabase Storage (local fallback)
 server/mail.js            Password-reset email (Resend or dev console)
 server/reports.js         Node report builder
 supabase/schema.sql       Postgres tables, constraints, indexes, RLS
@@ -450,7 +462,7 @@ send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` cont
 | GET    | `/api/product-images`         | admin, branch admin | Shared catalog image console and recent changes |
 | POST   | `/api/services/:id/image`     | admin, branch admin | Upload or replace a validated product image |
 | DELETE | `/api/services/:id/image`     | admin, branch admin | Remove an image and hide the product |
-| GET    | `/api/audit-logs`             | admin             | Recent security and product-image audit entries |
+| GET    | `/api/audit-logs`             | admin             | Recent auth, booking, payment, account, MFA, and image audit entries |
 | GET    | `/api/bookings`               | session           | Role-scoped booking list                 |
 | POST   | `/api/bookings`               | customer, admin   | Create an event or pickup booking        |
 | GET    | `/api/bookings/:id`           | session, scoped   | One booking with items and timeline      |
@@ -464,6 +476,7 @@ send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` cont
 | POST   | `/api/accounts`               | admin             | Create an owner/branch-head account      |
 | PATCH  | `/api/accounts/:id`           | admin             | Rename, move, activate, deactivate       |
 | POST   | `/api/accounts/:id/reset`     | admin             | One-time password and MFA reset          |
+| POST   | `/api/accounts/:id/mfa-reset` | admin             | Clear only a lost second factor          |
 | GET    | `/api/staff`                  | admin, branch admin | Crew records (scoped to the branch)    |
 | POST   | `/api/staff`                  | admin, branch admin | Create a crew record (no login)        |
 | PATCH  | `/api/staff/:id`              | admin, branch admin | Rename, re-branch, activate, deactivate |
@@ -475,6 +488,7 @@ send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` cont
 | GET    | `/api/reports`                | admin             | JSON operations report for a period      |
 | GET    | `/api/reports.csv`            | admin             | CSV export of the same report            |
 | GET    | `/api/health`                 | public            | Liveness and store mode                  |
+| GET    | `/api/ready`                  | public            | Readiness: proves the data store answers  |
 
 ---
 
@@ -489,7 +503,9 @@ The smoke test starts an isolated server on a temporary data directory, seeds lo
 fixtures, and checks public pages, the recovery entry point, the password policy, strong
 registration, decimal measurement rounding and tamper rejection, event and pickup
 bookings, manual branch priority, geocoded routing, review fallback, the
-five-simultaneous-service limit and next open slot, print-only exemption, crew login
+five-simultaneous-service limit and next open slot (including parallel requests with
+unique references), encrypted two-factor secrets, audit coverage for sign-in, bookings,
+payments, accounts, and MFA, print-only exemption, crew login
 refusal, crew records, studio account creation/deactivation/reset, two-factor enrollment
 and challenge, password change, discounts, the assistant's scope, branch isolation,
 payments, quantity breaks and quote gaps, owner price edits, frozen order snapshots,
@@ -504,11 +520,22 @@ data untouched.
 
 - Notifications are in-app only (the **Alerts** page). Password-reset email is the only
   transactional email; SMS and push delivery are not configured.
-- Uploaded photos live on disk. Use a persistent-disk host for `UPLOAD_DIR` (or mount a
-  volume) because an ephemeral Render filesystem loses images on redeploy. The database
-  stores paths and metadata, not image bytes.
+- Product images use Supabase Storage when `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+  and `SUPABASE_STORAGE_BUCKET` are configured; the storage bucket must be public for
+  the catalog to display images. Without those values, images fall back to the local
+  `UPLOAD_DIR`, which does not survive an ephemeral deploy. The database stores paths
+  and metadata, not image bytes.
 - Two-factor is available on every account and recommended for the owner and branch
-  heads, but it is not forced. The owner can reset it.
+  heads, but it is not forced. The owner can reset it from Team or from a customer's
+  booking drawer.
+- Booking capacity and reference allocation are serialised inside one Node process.
+  Running more than one app instance requires a database-level lock so two processes
+  cannot both fill the last slot; the unique reference constraint still prevents
+  duplicate references.
+- Email addresses are not verified at registration. A mistyped address can still book;
+  password-reset email simply will not arrive for it.
+- Booking lists return every role-visible row and the audit log is capped at 200 entries;
+  neither endpoint exposes pagination yet.
 - Geocoding uses the public Nominatim service, which asks for at most one request per
   second. For high booking volume, point `GEOCODER_URL` at a paid geocoder that returns
   the same `[{ lat, lon }]` shape.

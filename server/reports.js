@@ -28,7 +28,10 @@ export function buildReport(bookings, users, from, to) {
   const byService = new Map();
   const byMethod = new Map();
 
-  for (const booking of bookings) {
+  // Status counts describe the same bookings as summary.bookings. An all-time
+  // status table inside a one-month report is a data-integrity bug, not a
+  // separate metric.
+  for (const booking of created) {
     byStatus[booking.status] = (byStatus[booking.status] || 0) + 1;
   }
 

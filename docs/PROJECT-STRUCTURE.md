@@ -58,11 +58,13 @@ role and branch rules.
 | `app.js` | Every HTTP route, middleware, and permission rule. | `createApp(store)` | `server.js`, `scripts/smoke.mjs` |
 | `config.js` | Reads `process.env` once into typed constants. | `PORT`, `DATA_DIR`, `STORE_MODE`, `SEED_DEMO`, `MAX_SIMULTANEOUS_SERVICES`, geocoder settings | all server modules |
 | `store.js` | Persistence behind one interface: `list/get/insert/insertMany/update/remove`. | `createStore()` | routes, scripts, reports |
-| `security.js` | Password hashing, signed session/MFA cookies, TOTP. | `hashPassword`, `verifyPassword`, `createSessionToken`, `verifyTotp`, `sanitizeUser` | routes, seed, setup scripts |
+| `security.js` | Password hashing, signed session/MFA cookies, TOTP, and AES-256-GCM encryption of stored factor secrets. | `hashPassword`, `verifyPassword`, `createSessionToken`, `verifyTotp`, `encryptMfaSecret`, `decryptMfaSecret`, `sanitizeUser` | routes, seed, setup scripts |
 | `catalog.js` | The 2026 price catalog, quantity breaks, client-only rates, and server-side line pricing. | `CATEGORIES`, `SERVICES`, `CLIENT_PRICES`, `PRICE_REVIEWS`, `tierFor`, `priceLine` | routes, seed, availability, assistant |
 | `availability.js` | Booth/crew concurrency rules and next-free-slot search. | `checkCapacity`, `nextAvailableStart`, `capacityUnits` | bookings routes, assistant |
 | `geo.js` | Geocodes an address and picks the nearest branch. | `locateBookingAddress`, `assignBranch` | bookings routes |
 | `assistant.js` | Deterministic in-app Q&A over catalog, branches, policies, own bookings. | `answerQuestion`, `OUT_OF_SCOPE` | `/api/assistant` |
+| `images.js` | Validates JPG/PNG/WEBP uploads and persists them to Supabase Storage, with local disk as the development fallback. | `saveProductImage`, `removeProductImage`, `inspectProductImage` | service-image routes |
+| `mail.js` | Delivers password-reset email through Resend with a request timeout; prints the link in development. | `sendPasswordResetEmail` | auth routes |
 | `reports.js` | Aggregates bookings and renders CSV. | `buildReport`, `reportCsv` | report routes, `scripts/report.mjs` |
 | `seed.js` | Branches, studio accounts, demo bookings with fixed ids. | `buildSeed`, `SEED_BRANCHES` | `store.js`, setup scripts |
 
@@ -76,13 +78,15 @@ stay interchangeable.
 | Area | Endpoints |
 | --- | --- |
 | Auth | `POST /api/auth/register`, `/login`, `/mfa`, `/logout`, `/password`, `/mfa/setup`, `/mfa/enable`, `/mfa/disable`, `GET /api/auth/me` |
-| Catalog | `GET /api/services`, `GET /api/health` |
+| Catalog | `GET /api/services`, `GET /api/health`, `GET /api/ready` |
 | Owner pricing | `GET /api/pricing`, `PATCH /api/services/:id` |
+| Images | `GET /api/product-images`, `POST/DELETE /api/services/:id/image` |
+| Audit | `GET /api/audit-logs` |
 | Bookings | `GET/POST /api/bookings`, `GET /api/bookings/:id`, `PATCH /api/bookings/:id`, `PATCH /api/bookings/:id/payment` |
 | Availability | `GET /api/availability`, `POST /api/assistant` |
 | Discounts | `GET /api/discounts/mine`, `GET/POST /api/discounts`, `PATCH /api/discounts/:id` |
 | Studio | `GET /api/branches`, `GET /api/notifications`, `POST /api/notifications/read` |
-| Accounts | `GET/POST /api/accounts`, `PATCH /api/accounts/:id`, `POST /api/accounts/:id/reset` |
+| Accounts | `GET/POST /api/accounts`, `PATCH /api/accounts/:id`, `POST /api/accounts/:id/reset`, `POST /api/accounts/:id/mfa-reset` |
 | Crew | `GET/POST /api/staff`, `PATCH /api/staff/:id` |
 | Reports | `GET /api/reports`, `GET /api/reports.csv` |
 
@@ -144,10 +148,12 @@ Every value interpolated into a template literal goes through `esc()` from
 
 | File | Purpose |
 | --- | --- |
-| `schema.sql` | Base tables: `pm_users`, `pm_services`, `pm_bookings`, `pm_booking_updates`, `pm_branches`, `pm_notifications`, `pm_discounts`. |
-| `migrate-pricing.sql` | Adds tier, setup-fee, capacity, and review columns to `pm_services` on an existing project. |
+| `schema.sql` | Base tables: `pm_users`, `pm_services`, `pm_bookings`, `pm_booking_updates`, `pm_branches`, `pm_notifications`, `pm_discounts`, `pm_password_resets`, `pm_audit_logs`. |
 | `migrate-branches.sql` | Branch columns and branch-head accounts. |
 | `migrate-features.sql` | Booking types, discounts, notifications, two-factor columns. |
+| `migrate-pricing.sql` | Adds tier, setup-fee, capacity, and review columns to `pm_services` on an existing project. |
+| `migrate-booking-availability.sql` | Booking availability and product-management fields. |
+| `migrate-catalog-images-auth.sql` | Images, measured pricing, resets, and audit logs. |
 
 `server/store.js` maps the short names (`bookings`) to the `pm_` tables, so SQL
 changes should be paired with that map.
@@ -163,6 +169,13 @@ changes should be paired with that map.
   `completed`, `cancelled`. Only the first four hold capacity or count as owed.
 - **Roles** are `customer`, `branch_admin`, `admin`. Crew are `staff` records
   without passwords and never sign in.
+- **Concurrency:** booking creation and schedule edits run through an in-process
+  promise-chain mutex (`serialQueue` in `app.js`). Capacity is re-read inside the lock
+  and the unique booking reference is the cross-process backstop. A deployment with
+  more than one app instance still needs a database-level lock for capacity.
+- **Audit:** `audit()` writes auth, booking, payment, account, MFA, discount, and image
+  events. It never receives passwords, reset tokens, or factor secrets, and a failed
+  audit write is logged without failing the completed action.
 - **Comments** explain why a rule exists, not what a line does. Section banners
   mark the major blocks so long files stay navigable.
 

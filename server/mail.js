@@ -76,6 +76,10 @@ export async function sendPasswordResetEmail({ to, name, resetUrl, expiresMinute
 
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
+    // Account recovery must never hang a request indefinitely because the
+    // email provider is slow. The caller logs the failure and keeps the public
+    // response generic.
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Authorization: `Bearer ${RESEND_API_KEY}`,
       'Content-Type': 'application/json',

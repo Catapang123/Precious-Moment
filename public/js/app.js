@@ -4033,6 +4033,15 @@ function drawerTemplate(booking) {
               <div><span>Booking reference</span><strong>${esc(booking.ref)}</strong></div>
               ${showContact ? `<div><span>Customer</span><strong>${esc(contact.name || '—')}</strong></div><div><span>Contact</span><strong>${esc(contact.phone || contact.email || '—')}</strong></div>` : ''}
             </div>
+            ${
+              showContact && role === 'admin' && contact.mfa_enabled
+                ? `<div class="drawer-note">
+                    <span>Two-factor recovery</span>
+                    <p>${esc(contact.name || 'This customer')} has two-factor enabled. If they lost their authenticator, clear it here — their password stays the same and they will be signed out.</p>
+                    <button class="btn btn-sm" type="button" data-customer-mfa-reset="${esc(contact.id)}">Reset 2FA</button>
+                  </div>`
+                : ''
+            }
             ${booking.notes ? `<div class="drawer-note"><span>Client notes</span><p>${esc(booking.notes)}</p></div>` : ''}
           </section>
 
@@ -4745,6 +4754,39 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  const customerMfaReset = target.closest('[data-customer-mfa-reset]');
+  if (customerMfaReset) {
+    if (customerMfaReset.dataset.armed !== 'true') {
+      customerMfaReset.dataset.armed = 'true';
+      customerMfaReset.textContent = 'Tap again to reset 2FA';
+      toast('This signs the customer out and turns off two-factor. Tap once more.', 'warning');
+      return;
+    }
+    customerMfaReset.disabled = true;
+    customerMfaReset.textContent = 'Resetting…';
+    try {
+      const id = customerMfaReset.dataset.customerMfaReset;
+      await api(`/api/accounts/${encodeURIComponent(id)}/mfa-reset`, { method: 'POST', body: '{}' });
+      const current = state.activeBooking;
+      const updated = current
+        ? { ...current, customer: { ...current.customer, mfa_enabled: false } }
+        : null;
+      state.bookings = state.bookings.map((booking) =>
+        booking.customer?.id === id
+          ? { ...booking, customer: { ...booking.customer, mfa_enabled: false } }
+          : booking
+      );
+      if (updated) renderDrawer(updated);
+      toast('Two-factor reset. Their next sign-in asks for the password only.', 'success');
+    } catch (error) {
+      toast(error.message, 'error');
+      customerMfaReset.disabled = false;
+      customerMfaReset.textContent = 'Reset 2FA';
+      delete customerMfaReset.dataset.armed;
+    }
+    return;
+  }
+
   const accountReset = target.closest('[data-account-reset]');
   if (accountReset) {
     if (accountReset.dataset.armed !== 'true') {
@@ -5143,6 +5185,7 @@ document.addEventListener('submit', async (event) => {
   }
   if (form.id === 'password-form') {
     event.preventDefault();
+    const wasTemporary = Boolean(state.user.must_change_password);
     const button = form.querySelector('button[type="submit"]');
     const errorBox = form.querySelector('[data-password-error]');
     const data = new FormData(form);
@@ -5167,6 +5210,13 @@ document.addEventListener('submit', async (event) => {
       state.user.must_change_password = false;
       toast('Password updated.');
       form.reset();
+      if (wasTemporary) {
+        // The first bootstrap deliberately skipped data loading while the
+        // temporary-password gate was active. Reload once to enter the normal
+        // dashboard with a fresh, fully authorized session.
+        window.location.assign('/app');
+        return;
+      }
       renderView();
     } catch (error) {
       setError(error.message);
@@ -5341,6 +5391,28 @@ async function init() {
       return;
     }
     state.user = user;
+    // A reset password is deliberately not a usable dashboard session. Render
+    // only the password-change surface until the server issues a normal cookie.
+    if (user.must_change_password) {
+      state.services = [];
+      state.categories = [];
+      state.bookings = [];
+      state.branches = [];
+      state.customerDiscount = null;
+      state.accounts = [];
+      state.discounts = [];
+      state.staff = [];
+      state.notifications = [];
+      state.unread = 0;
+      restoreAssistantHistory();
+      setupConnectivity();
+      setupSessionGuard();
+      if (!window.location.hash) history.replaceState(null, '', '#account');
+      renderChrome();
+      await navigate('account');
+      toast('Choose a new password before using the dashboard.');
+      return;
+    }
     const requests = [
       api('/api/services'),
       api('/api/bookings'),

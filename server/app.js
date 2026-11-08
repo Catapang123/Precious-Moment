@@ -19,7 +19,7 @@ import { answerQuestion } from './assistant.js';
 import { capacityUnits, checkCapacity, toMinutes } from './availability.js';
 import { CATEGORIES, CLIENT_CATEGORY, CLIENT_PRICES, PRICE_REVIEWS, priceLine } from './catalog.js';
 import { locateBookingAddress } from './geo.js';
-import { APP_ORIGIN, DATA_DIR, IS_PROD, PASSWORD_RESET_TTL_MINUTES, UPLOAD_DIR } from './config.js';
+import { APP_ORIGIN, DATA_DIR, IS_PROD, PASSWORD_RESET_TTL_MINUTES, TRUST_PROXY, UPLOAD_DIR } from './config.js';
 import { inspectProductImage, removeProductImage, saveProductImage } from './images.js';
 import { sendPasswordResetEmail } from './mail.js';
 import { BOOKING_STATUSES, buildReport, reportCsv } from './reports.js';
@@ -29,8 +29,11 @@ import {
   clearSessionCookie,
   createMfaChallenge,
   createSessionToken,
+  decryptMfaSecret,
+  encryptMfaSecret,
   hashPassword,
   hashOpaqueToken,
+  isEncryptedMfaSecret,
   loadSessionSecret,
   newTotpSecret,
   otpauthUrl,
@@ -117,9 +120,17 @@ function validDate(value) {
 }
 
 function todayISO() {
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 10);
+  // Business dates belong to the studio, not to the host's timezone. Render
+  // runs in UTC, so taking the server-local date would accept a Philippine
+  // "yesterday" for the first eight hours of the local day.
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function isActiveUser(user) {
@@ -247,7 +258,14 @@ function parseCookies(header = '') {
     if (index === -1) return cookies;
     const key = part.slice(0, index).trim();
     const value = part.slice(index + 1).trim();
-    if (key) cookies[key] = decodeURIComponent(value);
+    if (key) {
+      try {
+        cookies[key] = decodeURIComponent(value);
+      } catch {
+        // A malformed cookie is equivalent to a missing cookie. Never let a
+        // client-controlled header turn into an unhandled 500.
+      }
+    }
     return cookies;
   }, {});
 }
@@ -297,7 +315,13 @@ function hydrateBooking(booking, users, updates, branches = []) {
     needs_review: Boolean(booking.needs_review),
     branch: branch ? { id: branch.id, name: branch.name, address: branch.address || '' } : null,
     customer: customer
-      ? { id: customer.id, name: customer.name, email: customer.email, phone: customer.phone || '' }
+      ? {
+          id: customer.id,
+          name: customer.name,
+          email: customer.email,
+          phone: customer.phone || '',
+          mfa_enabled: Boolean(customer.mfa_enabled),
+        }
       : null,
     staff: staff ? { id: staff.id, name: staff.name, email: staff.email } : null,
     updates: updates
@@ -382,13 +406,70 @@ async function nextBookingRef(store) {
   return `PM-${highest + 1}`;
 }
 
+/**
+ * Serialises one async critical section.
+ *
+ * Node is single-threaded, but `await` interleaves requests: two bookings can
+ * both read capacity and both see a free slot before either inserts. A promise
+ * chain gives the booking and schedule routes a mutex within this process. The
+ * unique booking-reference constraint remains the backstop across processes.
+ */
+function serialQueue() {
+  let tail = Promise.resolve();
+  return (task) => {
+    const run = tail.then(task, task);
+    tail = run.then(
+      () => {},
+      () => {}
+    );
+    return run;
+  };
+}
+
+/**
+ * The public catalog is a customer-facing view, not a database dump. Keep the
+ * fields the storefront and price card actually use and leave review notes,
+ * editor identities, and other internal metadata behind the admin API.
+ */
+function publicService(service) {
+  const fields = [
+    'id',
+    'name',
+    'category',
+    'description',
+    'price',
+    'unit',
+    'pricing_mode',
+    'min_area',
+    'min_qty',
+    'tiers',
+    'base_fee',
+    'dimension_unit',
+    'image_url',
+    'image_alt',
+    'image_updated_at',
+    'catalog_visible',
+    'round_dimensions_up',
+    'min_dimension',
+    'max_dimension',
+    'capacity',
+    'popular',
+    'booking_availability',
+    'addon',
+    'active',
+    'sort',
+  ];
+  return Object.fromEntries(fields.filter((field) => field in service).map((field) => [field, service[field]]));
+}
+
 export function createApp(store) {
   const app = express();
   const sessionSecret = loadSessionSecret(DATA_DIR);
   const loginAttempts = new Map();
+  const withBookingLock = serialQueue();
 
   app.disable('x-powered-by');
-  app.set('trust proxy', 1);
+  app.set('trust proxy', TRUST_PROXY);
   app.use(express.json({ limit: '100kb' }));
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -398,7 +479,7 @@ export function createApp(store) {
       'Content-Security-Policy',
       [
         "default-src 'self'",
-        "img-src 'self' data: https://images.unsplash.com",
+        "img-src 'self' data: https://images.unsplash.com https://*.supabase.co",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src https://fonts.gstatic.com",
         "script-src 'self'",
@@ -412,6 +493,9 @@ export function createApp(store) {
     // customer's manual choice always wins.
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
     if (IS_PROD) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    // API responses contain booking, account, and payment data. Never let a
+    // browser or intermediary retain them as a reusable cache entry.
+    if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
     next();
   });
   app.use(sameOrigin);
@@ -432,6 +516,21 @@ export function createApp(store) {
     } catch (error) {
       next(error);
     }
+  });
+
+  // A temporary password is not a normal session. Until it is replaced, only
+  // the account-recovery surface is reachable; every other API is blocked here,
+  // not merely discouraged in the browser.
+  app.use((req, res, next) => {
+    if (!req.user?.must_change_password) return next();
+    const allowed = new Set(['/api/auth/me', '/api/auth/password', '/api/auth/logout']);
+    if (req.path.startsWith('/api/') && !allowed.has(req.path)) {
+      return json(res, 403, {
+        error: 'Choose a new password before using the studio dashboard.',
+        code: 'password_change_required',
+      });
+    }
+    next();
   });
 
   const requireAuth = (req, res, next) => {
@@ -457,7 +556,15 @@ export function createApp(store) {
     }
     entry.count += 1;
     loginAttempts.set(key, entry);
+    // Entries normally expire on their next request, but an attacker rotating
+    // IPs would otherwise grow this map without bound. Sweep occasionally.
+    if (loginAttempts.size > 2000) {
+      for (const [attemptKey, attempt] of loginAttempts) {
+        if (attempt.reset < now) loginAttempts.delete(attemptKey);
+      }
+    }
     if (entry.count > 20) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((entry.reset - now) / 1000))));
       return json(res, 429, { error: 'Too many attempts. Please try again in a few minutes.' });
     }
     next();
@@ -529,6 +636,14 @@ export function createApp(store) {
         throw error;
       }
 
+      await audit(store, req, {
+        action: 'account.registered',
+        actorId: user.id,
+        actorRole: user.role,
+        targetType: 'user',
+        targetId: user.id,
+        metadata: { email: user.email },
+      });
       issueSession(res, user);
       json(res, 201, { user: sanitizeUser(user) });
     })
@@ -545,13 +660,33 @@ export function createApp(store) {
       if (user && user.role === 'staff') {
         // Crew records have no password at all; say so plainly instead of
         // letting a crew member keep guessing at a login that cannot work.
+        await audit(store, req, {
+          action: 'auth.login_failed',
+          targetType: 'email',
+          metadata: { email, reason: 'staff_record' },
+        });
         throw fail(403, signInProblem(user));
       }
       if (!user || !verifyPassword(password, user.password_hash)) {
+        await audit(store, req, {
+          action: 'auth.login_failed',
+          targetType: 'email',
+          metadata: { email, reason: 'bad_credentials' },
+        });
         throw fail(401, 'Email or password is incorrect.');
       }
       const problem = signInProblem(user);
-      if (problem) throw fail(403, problem);
+      if (problem) {
+        await audit(store, req, {
+          action: 'auth.login_failed',
+          actorId: user.id,
+          actorRole: user.role,
+          targetType: 'user',
+          targetId: user.id,
+          metadata: { reason: 'blocked' },
+        });
+        throw fail(403, problem);
+      }
       loginAttempts.delete(`${req.ip}:${req.path}`);
 
       if (user.mfa_enabled && user.mfa_secret) {
@@ -559,6 +694,14 @@ export function createApp(store) {
         return json(res, 200, { mfa_required: true });
       }
       issueSession(res, user);
+      await audit(store, req, {
+        action: 'auth.login',
+        actorId: user.id,
+        actorRole: user.role,
+        targetType: 'user',
+        targetId: user.id,
+        metadata: { mfa: false },
+      });
       json(res, 200, { user: sanitizeUser(user) });
     })
   );
@@ -574,20 +717,67 @@ export function createApp(store) {
         res.clearCookie(MFA_COOKIE_NAME, { path: '/' });
         throw fail(401, 'Two-factor is not enabled for this account. Sign in again.');
       }
-      if (!verifyTotp(user.mfa_secret, req.body?.code)) {
+      const secret = decryptMfaSecret(user.mfa_secret, sessionSecret);
+      if (!secret) {
+        throw fail(401, 'Two-factor could not be verified for this account. Ask the studio owner to reset it.');
+      }
+      if (!verifyTotp(secret, req.body?.code)) {
+        await audit(store, req, {
+          action: 'auth.mfa_failed',
+          actorId: user.id,
+          actorRole: user.role,
+          targetType: 'user',
+          targetId: user.id,
+          metadata: { reason: 'bad_code' },
+        });
         throw fail(401, 'That code is not valid. Check your authenticator app and try again.');
+      }
+      // Upgrade a legacy plaintext factor the first time its owner signs in.
+      if (!isEncryptedMfaSecret(user.mfa_secret)) {
+        const encrypted = encryptMfaSecret(secret, sessionSecret);
+        await store.update('users', user.id, { mfa_secret: encrypted });
+        user.mfa_secret = encrypted;
       }
       res.clearCookie(MFA_COOKIE_NAME, { path: '/' });
       loginAttempts.delete(`${req.ip}:${req.path}`);
       issueSession(res, user);
+      await audit(store, req, {
+        action: 'auth.login',
+        actorId: user.id,
+        actorRole: user.role,
+        targetType: 'user',
+        targetId: user.id,
+        metadata: { mfa: true },
+      });
       json(res, 200, { user: sanitizeUser(user) });
     })
   );
 
-  app.post('/api/auth/logout', (req, res) => {
+  app.post('/api/auth/logout', wrap(async (req, res) => {
+    // Signed cookies are stateless. Bumping the version is what makes the old
+    // cookie unusable on another device instead of merely deleting this copy.
+    if (req.user) {
+      try {
+        await store.update('users', req.user.id, {
+          session_version: (Number(req.user.session_version) || 0) + 1,
+        });
+      } catch (error) {
+        console.error('Could not revoke the session on logout:', error.message);
+      }
+    }
+    if (req.user) {
+      await audit(store, req, {
+        action: 'auth.logout',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: req.user.id,
+        metadata: { sessions_revoked: true },
+      });
+    }
     clearSessionCookie(res);
     json(res, 200, { ok: true });
-  });
+  }));
 
   app.get('/api/auth/me', requireAuth, (req, res) => {
     json(res, 200, { user: sanitizeUser(req.user) });
@@ -787,9 +977,22 @@ export function createApp(store) {
       if (verifyPassword(next, req.user.password_hash)) {
         throw fail(400, 'Choose a password you have not used before.');
       }
-      await store.update('users', req.user.id, {
+      const patch = {
         password_hash: hashPassword(next),
         must_change_password: false,
+        session_version: (Number(req.user.session_version) || 0) + 1,
+      };
+      const updated = (await store.update('users', req.user.id, patch)) || { ...req.user, ...patch };
+      // Keep this device signed in with a fresh cookie while invalidating every
+      // other session that used the old password.
+      issueSession(res, updated);
+      await audit(store, req, {
+        action: 'password.changed',
+        actorId: updated.id,
+        actorRole: updated.role,
+        targetType: 'user',
+        targetId: updated.id,
+        metadata: { other_sessions_revoked: true },
       });
       json(res, 200, { ok: true });
     })
@@ -800,7 +1003,16 @@ export function createApp(store) {
     requireAuth,
     wrap(async (req, res) => {
       const secret = newTotpSecret();
-      await store.update('users', req.user.id, { mfa_pending_secret: secret });
+      await store.update('users', req.user.id, {
+        mfa_pending_secret: encryptMfaSecret(secret, sessionSecret),
+      });
+      await audit(store, req, {
+        action: 'mfa.setup_started',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: req.user.id,
+      });
       json(res, 200, {
         secret,
         otpauth: otpauthUrl(secret, req.user.email),
@@ -813,15 +1025,22 @@ export function createApp(store) {
     '/api/auth/mfa/enable',
     requireAuth,
     wrap(async (req, res) => {
-      const secret = req.user.mfa_pending_secret;
+      const secret = decryptMfaSecret(req.user.mfa_pending_secret, sessionSecret);
       if (!secret) throw fail(400, 'Start the two-factor setup first.');
       if (!verifyTotp(secret, req.body?.code)) {
         throw fail(400, 'That code is not valid yet. Wait for the next code and try again.');
       }
       await store.update('users', req.user.id, {
-        mfa_secret: secret,
+        mfa_secret: encryptMfaSecret(secret, sessionSecret),
         mfa_enabled: true,
         mfa_pending_secret: null,
+      });
+      await audit(store, req, {
+        action: 'mfa.enabled',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: req.user.id,
       });
       json(res, 200, { ok: true, mfa_enabled: true });
     })
@@ -838,6 +1057,13 @@ export function createApp(store) {
         mfa_secret: null,
         mfa_enabled: false,
         mfa_pending_secret: null,
+      });
+      await audit(store, req, {
+        action: 'mfa.disabled',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: req.user.id,
       });
       json(res, 200, { ok: true, mfa_enabled: false });
     })
@@ -860,7 +1086,8 @@ export function createApp(store) {
         services: services
           .filter((service) => service.active !== false && service.catalog_visible !== false)
           .filter((service) => !bookingType || serviceAvailableFor(service, bookingType))
-          .sort((a, b) => (a.sort || 0) - (b.sort || 0)),
+          .sort((a, b) => (a.sort || 0) - (b.sort || 0))
+          .map(publicService),
       });
     })
   );
@@ -1267,8 +1494,21 @@ export function createApp(store) {
     })
   );
 
+  // Liveness only: this proves the process is up, not that its dependencies are.
   app.get('/api/health', (req, res) => {
     json(res, 200, { ok: true, store: store.mode, time: new Date().toISOString() });
+  });
+
+  // Readiness proves the process can actually reach its data store. Render and
+  // any future load balancer should use this path instead of liveness.
+  app.get('/api/ready', async (req, res) => {
+    try {
+      await store.list('branches');
+      json(res, 200, { ok: true, store: store.mode, time: new Date().toISOString() });
+    } catch (error) {
+      console.error('Readiness check failed:', error.message);
+      json(res, 503, { ok: false, store: store.mode, error: 'Database is not ready.' });
+    }
   });
 
   // ---- Bookings
@@ -1428,7 +1668,8 @@ export function createApp(store) {
 
       const booking = {
         id: crypto.randomUUID(),
-        ref: await nextBookingRef(store),
+        // Allocated inside the serialised section below.
+        ref: '',
         customer_id: req.user.id,
         staff_id: null,
         branch_id: branchId,
@@ -1459,7 +1700,40 @@ export function createApp(store) {
       };
 
       try {
-        await store.insert('bookings', booking);
+        await withBookingLock(async () => {
+          // Re-check inside the critical section: another request may have
+          // filled the window while this one was pricing its cart.
+          if (bookingType === 'event' && branchId && capacityUnits(items) > 0) {
+            const current = await store.list('bookings');
+            const capacity = checkCapacity(current, {
+              date: eventDate,
+              branchId,
+              start: toMinutes(eventTime),
+              hours: durationHours,
+              units: capacityUnits(items),
+            });
+            if (capacity.full) {
+              const nextSlot = capacity.next_label
+                ? ` The next open start on that date is ${capacity.next_label}.`
+                : ' Choose another date or fewer booths.';
+              throw fail(
+                409,
+                `That time is full at ${capacity.capacity} simultaneous services.${nextSlot}`
+              );
+            }
+          }
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            booking.ref = await nextBookingRef(store);
+            try {
+              await store.insert('bookings', booking);
+              return;
+            } catch (error) {
+              // The unique reference constraint is the backstop if two
+              // processes allocate the same number at the same moment.
+              if (attempt === 2 || !/duplicate|unique/i.test(String(error.message))) throw error;
+            }
+          }
+        });
         await addTimeline(
           store,
           booking.id,
@@ -1475,6 +1749,21 @@ export function createApp(store) {
         await store.remove('bookings', booking.id).catch(() => {});
         throw error;
       }
+
+      await audit(store, req, {
+        action: 'booking.created',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'booking',
+        targetId: booking.id,
+        metadata: {
+          ref: booking.ref,
+          branch_id: branchId,
+          total,
+          items: items.length,
+          needs_review: needsReview,
+        },
+      });
 
       const { users, updates } = await bookingLists(store);
       const branch = branches.find((item) => item.id === booking.branch_id);
@@ -1658,38 +1947,53 @@ export function createApp(store) {
         patch.duration_hours !== undefined ||
         patch.branch_id !== undefined ||
         patch.status !== undefined;
-      if (next.booking_type === 'event' && next.branch_id && touchesSchedule) {
-        const units = capacityUnits(next.items);
-        const start = toMinutes(next.event_time || '09:00');
-        if (units > 0 && start !== null && !['completed', 'cancelled'].includes(next.status)) {
-          const bookings = await store.list('bookings');
-          const capacity = checkCapacity(bookings, {
-            date: String(next.event_date).slice(0, 10),
-            branchId: next.branch_id,
-            start,
-            hours: next.duration_hours,
-            units,
-            excludeId: booking.id,
-          });
-          if (capacity.full) {
-            const nextSlot = capacity.next_label
-              ? ` The next open start is ${capacity.next_label}.`
-              : '';
-            throw fail(
-              409,
-              `That time is full at ${capacity.capacity} simultaneous services.${nextSlot}`
-            );
+      const updated = await withBookingLock(async () => {
+        if (next.booking_type === 'event' && next.branch_id && touchesSchedule) {
+          const units = capacityUnits(next.items);
+          const start = toMinutes(next.event_time || '09:00');
+          if (units > 0 && start !== null && !['completed', 'cancelled'].includes(next.status)) {
+            const bookings = await store.list('bookings');
+            const capacity = checkCapacity(bookings, {
+              date: String(next.event_date).slice(0, 10),
+              branchId: next.branch_id,
+              start,
+              hours: next.duration_hours,
+              units,
+              excludeId: booking.id,
+            });
+            if (capacity.full) {
+              const nextSlot = capacity.next_label
+                ? ` The next open start is ${capacity.next_label}.`
+                : '';
+              throw fail(
+                409,
+                `That time is full at ${capacity.capacity} simultaneous services.${nextSlot}`
+              );
+            }
           }
         }
-      }
 
-      const updated = await store.update('bookings', booking.id, {
-        ...patch,
-        updated_at: new Date().toISOString(),
+        return store.update('bookings', booking.id, {
+          ...patch,
+          updated_at: new Date().toISOString(),
+        });
       });
       for (const [status, message] of messages) {
         await addTimeline(store, booking.id, req.user.id, status, message);
       }
+
+      await audit(store, req, {
+        action: patch.status === 'cancelled' ? 'booking.cancelled' : 'booking.updated',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'booking',
+        targetId: booking.id,
+        metadata: {
+          ref: booking.ref,
+          fields: Object.keys(patch),
+          status: updated.status,
+        },
+      });
 
       const { users, updates, branches } = await bookingLists(store);
       json(res, 200, { booking: hydrateBooking(updated, users, updates, branches) });
@@ -1741,6 +2045,20 @@ export function createApp(store) {
           method ? ` via ${method}` : ''
         }.`
       );
+
+      await audit(store, req, {
+        action: 'payment.recorded',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'booking',
+        targetId: booking.id,
+        metadata: {
+          ref: booking.ref,
+          payment_status: status,
+          amount_paid: amount,
+          method,
+        },
+      });
 
       const { users, updates, branches } = await bookingLists(store);
       json(res, 200, { booking: hydrateBooking(updated, users, updates, branches) });
@@ -1898,6 +2216,14 @@ export function createApp(store) {
         updated_at: now,
       };
       await store.insert('discounts', row);
+      await audit(store, req, {
+        action: 'discount.created',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'discount',
+        targetId: row.id,
+        metadata: { customer_id: customer.id, type, value },
+      });
       json(res, 201, { discount: { ...row, customer: customerSummary, label: discountLabelFor(row) } });
     })
   );
@@ -1921,6 +2247,14 @@ export function createApp(store) {
       if (Object.keys(patch).length === 0) throw fail(400, 'Nothing to update.');
       patch.updated_at = new Date().toISOString();
       const updated = await store.update('discounts', discount.id, patch);
+      await audit(store, req, {
+        action: 'discount.updated',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'discount',
+        targetId: discount.id,
+        metadata: { customer_id: discount.customer_id, fields: Object.keys(patch), active: updated.active !== false },
+      });
       json(res, 200, { discount: { ...updated, label: discountLabelFor(updated) } });
     })
   );
@@ -2030,6 +2364,14 @@ export function createApp(store) {
         created_at: new Date().toISOString(),
       };
       await store.insert('users', user);
+      await audit(store, req, {
+        action: 'account.created',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: user.id,
+        metadata: { account: user.email, role: user.role, branch_id: user.branch_id },
+      });
       json(res, 201, { account: sanitizeUser(user) });
     })
   );
@@ -2056,10 +2398,24 @@ export function createApp(store) {
         if (!branches.some((branch) => branch.id === branchId)) throw fail(400, 'Choose a valid branch.');
         patch.branch_id = branchId;
       }
-      if (req.body?.active !== undefined) patch.active = Boolean(req.body.active);
+      if (req.body?.active !== undefined) {
+        patch.active = Boolean(req.body.active);
+        // Deactivation and reactivation must both invalidate cookies issued
+        // before the change; otherwise a reactivated account would silently
+        // accept its old session again.
+        patch.session_version = (Number(target.session_version) || 0) + 1;
+      }
       if (Object.keys(patch).length === 0) throw fail(400, 'Nothing to update.');
 
       const updated = await store.update('users', target.id, patch);
+      await audit(store, req, {
+        action: 'account.updated',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: target.id,
+        metadata: { account: target.email, fields: Object.keys(patch), active: updated.active !== false },
+      });
       json(res, 200, { account: sanitizeUser(updated) });
     })
   );
@@ -2069,20 +2425,58 @@ export function createApp(store) {
     requireRole('admin'),
     wrap(async (req, res) => {
       const target = await store.get('users', req.params.id);
-      if (!target || !ACCOUNT_ROLES.includes(target.role)) throw fail(404, 'Account not found.');
+      if (!target || !LOGIN_ROLES.includes(target.role)) throw fail(404, 'Account not found.');
       const temporary = temporaryPassword();
       const patch = {
         password_hash: hashPassword(temporary),
         must_change_password: true,
         active: true,
+        // Owner-initiated reset must terminate every existing session immediately.
+        session_version: (Number(target.session_version) || 0) + 1,
       };
       if (req.body?.reset_mfa !== false) {
         patch.mfa_enabled = false;
         patch.mfa_secret = null;
         patch.mfa_pending_secret = null;
       }
+      const updated = (await store.update('users', target.id, patch)) || { ...target, ...patch };
+      await audit(store, req, {
+        action: 'account.password_reset',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: target.id,
+        metadata: { account: target.email, mfa_cleared: patch.mfa_enabled === false },
+      });
+      json(res, 200, { temporary_password: temporary, account: sanitizeUser(updated) });
+    })
+  );
+
+  // A customer can lose an authenticator without losing their password. The
+  // owner needs a narrow recovery action that clears only the second factor;
+  // resetting the password as a side effect makes support riskier than useful.
+  app.post(
+    '/api/accounts/:id/mfa-reset',
+    requireRole('admin'),
+    wrap(async (req, res) => {
+      const target = await store.get('users', req.params.id);
+      if (!target || !LOGIN_ROLES.includes(target.role)) throw fail(404, 'Account not found.');
+      const patch = {
+        mfa_enabled: false,
+        mfa_secret: null,
+        mfa_pending_secret: null,
+        session_version: (Number(target.session_version) || 0) + 1,
+      };
       await store.update('users', target.id, patch);
-      json(res, 200, { temporary_password: temporary, account: sanitizeUser(target) });
+      await audit(store, req, {
+        action: 'account.mfa_reset',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'user',
+        targetId: target.id,
+        metadata: { account: target.email },
+      });
+      json(res, 200, { ok: true, mfa_enabled: false });
     })
   );
 
@@ -2201,6 +2595,9 @@ export function createApp(store) {
       const to = String(req.query.to || todayISO());
       if (!validDate(from) || !validDate(to) || from > to) {
         throw fail(400, 'Choose a valid report period.');
+      }
+      if ((new Date(to) - new Date(from)) / 86400000 > 366) {
+        throw fail(400, 'Report periods can cover at most one year.');
       }
       const [bookings, users] = await Promise.all([store.list('bookings'), store.list('users')]);
       const report = buildReport(bookings, users, from, to);

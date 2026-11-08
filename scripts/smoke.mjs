@@ -172,7 +172,15 @@ try {
   const health = await publicSession('/api/health');
   assert.equal(health.status, 200);
   assert.equal(health.body.ok, true);
-  pass('health endpoint responds');
+  assert.equal(health.headers.get('cache-control'), 'no-store');
+  const ready = await publicSession('/api/ready');
+  assert.equal(ready.status, 200);
+  assert.equal(ready.body.ok, true);
+  const malformedCookie = await fetch(`${base}/api/auth/me`, {
+    headers: { cookie: 'pm_session=%E0%A4%A' },
+  });
+  assert.equal(malformedCookie.status, 401);
+  pass('health, readiness, cache headers, and malformed-cookie handling are safe');
 
   const root = await publicSession('/');
   assert.equal(root.status, 302);
@@ -213,7 +221,13 @@ try {
   );
   const anonPricing = await publicSession('/api/pricing');
   assert.equal(anonPricing.status, 401);
+  const publicKeys = new Set(Object.keys(catalog.body.services[0]));
+  for (const internal of ['review_note', 'needs_review', 'image_updated_by', 'admin_edited', 'origin', 'created_at']) {
+    assert.equal(publicKeys.has(internal), false, `public catalog leaked ${internal}`);
+  }
+  assert.equal(catalog.headers.get('cache-control'), 'no-store');
   pass('the 2026 catalog has ten public categories and quantity breaks');
+  pass('the public catalog omits internal review and editor metadata');
 
   // A store seeded before Tarpaulin and Blackout became measured products must
   // receive them on the next startup, without rewriting prices it already has.
@@ -516,6 +530,32 @@ try {
   }
   pass('five simultaneous booths can be booked for the same window');
 
+  // Fire the requests together, not one after another: without the booking
+  // mutex every request could read the same free capacity before any write.
+  const raceDate = futureDate(201);
+  const race = await Promise.all(
+    Array.from({ length: 6 }, (_, index) =>
+      customer('/api/bookings', {
+        method: 'POST',
+        body: JSON.stringify({
+          booking_type: 'event',
+          event_date: raceDate,
+          event_time: '07:00',
+          duration_hours: 5,
+          branch_id: 'branch-batangas',
+          venue: `Race venue ${index + 1}`,
+          address: 'P. Burgos Street, Batangas City, Batangas',
+          items: [{ service_id: 'photobooth-strips', qty: 1 }],
+        }),
+      })
+    )
+  );
+  const accepted = race.filter((result) => result.status === 201);
+  assert.equal(accepted.length, 5, race.map((result) => result.status).join(','));
+  assert.equal(race.filter((result) => result.status === 409).length, 1);
+  assert.equal(new Set(accepted.map((result) => result.body.booking.ref)).size, 5);
+  pass('parallel booking requests keep references unique and never overbook');
+
   const overflow = await customer('/api/bookings', {
     method: 'POST',
     body: JSON.stringify({
@@ -740,6 +780,13 @@ try {
   const headEmail = branchHead.body.account.email;
   pass('the owner creates a branch head account');
 
+  const headSession = session();
+  const headLogin = await headSession('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: headEmail, password: 'NewHead@2026' }),
+  });
+  assert.equal(headLogin.status, 200);
+
   const deactivated = await admin(`/api/accounts/${headId}`, {
     method: 'PATCH',
     body: JSON.stringify({ active: false }),
@@ -760,13 +807,29 @@ try {
   });
   assert.equal(reset.status, 200);
   assert.ok(reset.body.temporary_password.length >= 10);
-  const resetLogin = await session()('/api/auth/login', {
+  const resetSession = session();
+  const resetLogin = await resetSession('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email: headEmail, password: reset.body.temporary_password }),
   });
   assert.equal(resetLogin.status, 200);
   assert.equal(resetLogin.body.user.must_change_password, true);
-  pass('the owner resets a password and the temporary sign-in is flagged');
+  const oldHeadSession = await headSession('/api/auth/me');
+  assert.equal(oldHeadSession.status, 401);
+  const temporaryBlocked = await resetSession('/api/bookings');
+  assert.equal(temporaryBlocked.status, 403);
+  assert.equal(temporaryBlocked.body.code, 'password_change_required');
+  const temporaryChanged = await resetSession('/api/auth/password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: reset.body.temporary_password,
+      new_password: 'NewHead@2027!',
+    }),
+  });
+  assert.equal(temporaryChanged.status, 200);
+  const afterTemporaryChange = await resetSession('/api/bookings');
+  assert.equal(afterTemporaryChange.status, 200);
+  pass('reset revokes old sessions and forces a temporary password change');
 
   const branch1 = session();
   const branch1Login = await branch1('/api/auth/login', {
@@ -1066,7 +1129,13 @@ try {
   });
   assert.equal(enabled.status, 200);
   assert.equal(enabled.body.mfa_enabled, true);
-  pass('two-factor can be enrolled with an authenticator app');
+
+  const storedAfterMfa = JSON.parse(fs.readFileSync(path.join(dataDir, 'store.json'), 'utf8'));
+  const mfaRow = storedAfterMfa.users.find((user) => user.email === mfaEmail);
+  assert.match(mfaRow.mfa_secret, /^enc:v1:/);
+  assert.notEqual(mfaRow.mfa_secret, setup.body.secret);
+  assert.equal(mfaRow.mfa_pending_secret, null);
+  pass('two-factor secrets are encrypted at rest');
 
   const mfaLogin = session();
   const stepOne = await mfaLogin('/api/auth/login', {
@@ -1091,6 +1160,22 @@ try {
   const mfaMe = await mfaLogin('/api/auth/me');
   assert.equal(mfaMe.status, 200);
   pass('two-factor is required at sign-in before a session is issued');
+
+  const customerMfaReset = await admin(`/api/accounts/${rightCode.body.user.id}/mfa-reset`, {
+    method: 'POST',
+    body: '{}',
+  });
+  assert.equal(customerMfaReset.status, 200);
+  assert.equal(customerMfaReset.body.mfa_enabled, false);
+  const oldMfaSession = await mfaLogin('/api/auth/me');
+  assert.equal(oldMfaSession.status, 401);
+  const afterMfaReset = await session()('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: mfaEmail, password: 'MfaNext@2026' }),
+  });
+  assert.equal(afterMfaReset.status, 200);
+  assert.equal(afterMfaReset.body.mfa_required, undefined);
+  pass('the owner can reset a customer MFA factor and revoke the old session');
 
   // ---- Unified self-service password recovery
   const unknownForgot = await publicSession('/api/auth/forgot-password', {
@@ -1205,6 +1290,21 @@ try {
   assert.equal(paid.body.booking.amount_paid, Math.ceil(4700 / 2));
   pass('admin records a deposit at 50%');
 
+  const actionLogs = await admin('/api/audit-logs?limit=200');
+  const auditedActions = new Set(actionLogs.body.logs.map((log) => log.action));
+  for (const action of [
+    'auth.login',
+    'auth.login_failed',
+    'booking.created',
+    'payment.recorded',
+    'account.created',
+    'mfa.enabled',
+    'account.mfa_reset',
+  ]) {
+    assert.ok(auditedActions.has(action), `missing audit action: ${action}`);
+  }
+  pass('sign-in, booking, payment, MFA, and account events are audited');
+
   const crossOrigin = await admin(`/api/bookings/${bookingId}`, {
     method: 'PATCH',
     headers: { Origin: 'https://not-the-studio.example' },
@@ -1232,6 +1332,13 @@ try {
   assert.equal(csv.status, 200);
   assert.match(csv.headers.get('content-type') || '', /text\/csv/);
   assert.match(csv.body, /Precious Moments operations report/);
+  const emptyReport = await admin('/api/reports?from=2030-01-01&to=2030-01-31');
+  assert.equal(emptyReport.status, 200);
+  assert.equal(emptyReport.body.report.summary.bookings, 0);
+  assert.ok(emptyReport.body.report.by_status.every((row) => row.count === 0));
+  const oversizedCsv = await admin('/api/reports.csv?from=1900-01-01&to=2100-01-01');
+  assert.equal(oversizedCsv.status, 400);
+  pass('report status counts stay in-period and CSV exports are capped');
   pass('report downloads as CSV');
 
   const branchReport = await branch1('/api/reports');
@@ -1262,6 +1369,26 @@ try {
   const afterLogout = await customer('/api/auth/me');
   assert.equal(afterLogout.status, 401);
   pass('logout clears the session');
+
+  const rawLogin = await fetch(`${base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'jessa@example.com', password: 'Customer123!' }),
+  });
+  const rawCookie = (rawLogin.headers.getSetCookie?.() || [])
+    .find((value) => value.startsWith('pm_session='))
+    ?.split(';')[0];
+  assert.ok(rawCookie);
+  const rawLogout = await fetch(`${base}/api/auth/logout`, {
+    method: 'POST',
+    headers: { cookie: rawCookie },
+  });
+  assert.equal(rawLogout.status, 200);
+  const reuseAfterLogout = await fetch(`${base}/api/auth/me`, {
+    headers: { cookie: rawCookie },
+  });
+  assert.equal(reuseAfterLogout.status, 401);
+  pass('logout revokes the old cookie server-side');
 
   console.log(`\n${checks.length} checks passed.`);
 } catch (error) {
