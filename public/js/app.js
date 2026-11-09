@@ -223,7 +223,22 @@ const state = {
   lastFocused: null,
   lastModalFocus: null,
   drawerOpening: false,
+  cancellations: null,
 };
+
+/* ---------- Customer design and reference uploads ---------- */
+
+const DESIGN_MAX_BYTES = 10 * 1024 * 1024;
+const DESIGN_MAX_FILES = 8;
+const DESIGN_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'pdf', 'psd', 'ai', 'svg']);
+const DESIGN_STATUS_LABELS = {
+  for_review: 'For review',
+  in_progress: 'Design in progress',
+  for_approval: 'For customer approval',
+  approved: 'Approved for printing',
+};
+// Files chosen before the booking exists; uploaded right after it is created.
+let designQueue = [];
 
 /* ---------- Small helpers ---------- */
 
@@ -1184,6 +1199,23 @@ function renderBookView() {
             <label for="booking-notes">Notes <span class="field-hint">optional</span></label>
             <textarea class="textarea" id="booking-notes" name="notes" maxlength="2000" placeholder="Theme, sizes, call time, or anything we should know."></textarea>
           </div>
+          <section class="design-upload" id="design-upload" aria-labelledby="design-upload-title">
+            <div class="design-upload-head">
+              <h4 id="design-upload-title">Upload Design / Reference Files</h4>
+              <p>Upload your preferred design, sample pictures, or inspiration references to help us understand what you want. JPG, PNG, WEBP, PDF, PSD, AI, or SVG · up to 10 MB each · up to 8 files per booking.</p>
+            </div>
+            <div class="upload-dropzone" id="design-dropzone" role="button" tabindex="0" aria-describedby="design-upload-hint">
+              <strong>Drag files here, paste an image, or browse</strong>
+              <span id="design-upload-hint">Inspiration photos, layouts, and design sources. Files stay private to this booking.</span>
+              <span class="btn btn-sm" aria-hidden="true">Browse files</span>
+              <input type="file" id="design-file-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.psd,.ai,.svg" multiple hidden />
+            </div>
+            <div class="upload-queue" id="design-queue" aria-live="polite"></div>
+            <div class="field">
+              <label for="design-notes">Additional Design Instructions <span class="field-hint">optional</span></label>
+              <textarea class="textarea" id="design-notes" name="design_notes" maxlength="1000" placeholder="Preferred colors, text or names to include, event theme, layout notes, or changes to a reference."></textarea>
+            </div>
+          </section>
           <p class="availability-note" id="availability-note" hidden></p>
           <div class="form-error" id="booking-error" role="alert"></div>
           <button class="btn btn-primary button-block" type="submit" ${state.cart.length ? '' : 'disabled'}>Send booking request</button>
@@ -1193,6 +1225,7 @@ function renderBookView() {
     </div>`;
   renderAvailabilityNote();
   renderTypeNotice();
+  bindDesignUpload();
   if (state.bookingType === 'pickup') suggestPickupBranch();
 }
 
@@ -1822,6 +1855,216 @@ function addService(id) {
   toast(`${service.name} added.`);
 }
 
+function designFileExtension(name) {
+  const match = /\.([a-z0-9]+)$/i.exec(String(name || ''));
+  return match ? match[1].toLowerCase() : '';
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function designQueueRow(item) {
+  const extension = designFileExtension(item.file.name);
+  const preview = item.preview
+    ? `<img class="upload-thumb" src="${item.preview}" alt="" />`
+    : `<span class="upload-thumb">${esc((extension || 'file').toUpperCase())}</span>`;
+  const status =
+    item.status === 'error'
+      ? `<span class="upload-status is-error">${esc(item.error || 'Upload failed.')}</span>`
+      : item.status === 'uploading'
+        ? `<span class="upload-status">Uploading ${item.progress}%</span>`
+        : item.status === 'done'
+          ? '<span class="upload-status">Uploaded</span>'
+          : `<span class="upload-status">${formatBytes(item.file.size)}</span>`;
+  return `
+    <div class="upload-row" data-design-queued="${esc(item.id)}">
+      ${preview}
+      <div class="upload-meta">
+        <strong>${esc(item.file.name)}</strong>
+        <small>${esc(item.file.type || 'unknown type')} · ${formatBytes(item.file.size)}</small>
+        <select data-design-kind="${esc(item.id)}" aria-label="What is ${esc(item.file.name)}?">
+          <option value="reference" ${item.kind === 'reference' ? 'selected' : ''}>Reference / inspiration</option>
+          <option value="final" ${item.kind === 'final' ? 'selected' : ''}>Final design to print</option>
+        </select>
+        ${status}
+      </div>
+      <button class="upload-remove" type="button" data-design-remove="${esc(item.id)}" aria-label="Remove ${esc(item.file.name)}">×</button>
+      ${item.status === 'uploading' ? `<div class="upload-progress"><i style="width:${item.progress}%"></i></div>` : ''}
+    </div>`;
+}
+
+function renderDesignQueue() {
+  const box = document.getElementById('design-queue');
+  if (!box) return;
+  box.innerHTML = designQueue.map(designQueueRow).join('');
+}
+
+/** Queues files locally, rejecting bad types and oversized files up front. */
+function addDesignFiles(fileList) {
+  const incoming = Array.from(fileList || []);
+  let skipped = 0;
+  for (const file of incoming) {
+    if (designQueue.length >= DESIGN_MAX_FILES) {
+      skipped += 1;
+      continue;
+    }
+    if (!DESIGN_EXTENSIONS.has(designFileExtension(file.name)) || Number(file.size) > DESIGN_MAX_BYTES) {
+      skipped += 1;
+      continue;
+    }
+    const item = {
+      id: `design-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      file,
+      kind: 'reference',
+      status: 'queued',
+      progress: 0,
+      error: '',
+      preview: '',
+    };
+    if (String(file.type || '').startsWith('image/')) {
+      try {
+        item.preview = URL.createObjectURL(file);
+      } catch {
+        item.preview = '';
+      }
+    }
+    designQueue.push(item);
+  }
+  if (skipped) {
+    toast(
+      `${skipped} file${skipped === 1 ? '' : 's'} skipped. Use JPG, PNG, WEBP, PDF, PSD, AI, or SVG up to 10 MB, with at most ${DESIGN_MAX_FILES} files.`,
+      'error'
+    );
+  }
+  renderDesignQueue();
+}
+
+function removeDesignFile(id) {
+  const index = designQueue.findIndex((item) => item.id === id);
+  if (index === -1) return;
+  const [removed] = designQueue.splice(index, 1);
+  if (removed.preview) URL.revokeObjectURL(removed.preview);
+  renderDesignQueue();
+}
+
+function clearDesignQueue() {
+  for (const item of designQueue) if (item.preview) URL.revokeObjectURL(item.preview);
+  designQueue = [];
+  renderDesignQueue();
+}
+
+/** One raw-body upload. XHR rather than fetch because it reports real progress. */
+function uploadDesignFile(bookingId, item) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/bookings/${encodeURIComponent(bookingId)}/files`);
+    xhr.setRequestHeader('Content-Type', item.file.type || 'application/octet-stream');
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(item.file.name));
+    xhr.setRequestHeader('X-File-Kind', item.kind === 'final' ? 'final' : 'reference');
+    xhr.timeout = 120000;
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      item.progress = Math.min(99, Math.round((event.loaded / event.total) * 100));
+      renderDesignQueue();
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        item.progress = 100;
+        resolve(xhr.responseText ? JSON.parse(xhr.responseText) : {});
+        return;
+      }
+      let message = 'The upload failed. Please try again.';
+      try {
+        message = JSON.parse(xhr.responseText).error || message;
+      } catch {
+        // Non-JSON error body: keep the generic message.
+      }
+      reject(new Error(message));
+    };
+    xhr.onerror = () => reject(new Error('The upload was interrupted. Check your connection and try again.'));
+    xhr.ontimeout = () => reject(new Error('The upload took too long. Try again on a stronger connection.'));
+    xhr.send(item.file);
+  });
+}
+
+/** Uploads every queued file after the booking exists; returns the failure count. */
+async function uploadDesignQueue(bookingId) {
+  const pending = designQueue.slice();
+  let failed = 0;
+  for (const item of pending) {
+    if (item.status === 'done') continue;
+    item.status = 'uploading';
+    item.progress = 0;
+    renderDesignQueue();
+    try {
+      await uploadDesignFile(bookingId, item);
+      item.status = 'done';
+    } catch (error) {
+      item.status = 'error';
+      item.error = error.message;
+      failed += 1;
+    }
+    renderDesignQueue();
+  }
+  return failed;
+}
+
+/** Wires the dropzone, picker, paste handler, and per-file kind selector. */
+function bindDesignUpload() {
+  const zone = document.getElementById('design-dropzone');
+  const input = document.getElementById('design-file-input');
+  if (!zone || !input) return;
+  if (!zone.dataset.bound) {
+    zone.dataset.bound = '1';
+    zone.addEventListener('click', () => input.click());
+    zone.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        input.click();
+      }
+    });
+    zone.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      zone.classList.add('is-dragging');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('is-dragging'));
+    zone.addEventListener('drop', (event) => {
+      event.preventDefault();
+      zone.classList.remove('is-dragging');
+      addDesignFiles(event.dataTransfer?.files);
+    });
+    input.addEventListener('change', () => {
+      addDesignFiles(input.files);
+      input.value = '';
+    });
+    // A pasted screenshot is a reference image too.
+    document.addEventListener('paste', (event) => {
+      if (!document.getElementById('design-dropzone')) return;
+      const items = Array.from(event.clipboardData?.items || []);
+      const files = items
+        .filter((entry) => entry.kind === 'file')
+        .map((entry) => entry.getAsFile())
+        .filter(Boolean);
+      if (files.length) addDesignFiles(files);
+    });
+  }
+  const queue = document.getElementById('design-queue');
+  if (queue && !queue.dataset.bound) {
+    queue.dataset.bound = '1';
+    queue.addEventListener('change', (event) => {
+      const select = event.target.closest('[data-design-kind]');
+      if (!select) return;
+      const item = designQueue.find((row) => row.id === select.dataset.designKind);
+      if (item) item.kind = select.value === 'final' ? 'final' : 'reference';
+    });
+  }
+  renderDesignQueue();
+}
+
 /**
  * Posts the booking, then shows the success dialog. The server recalculates
  * every price and re-checks capacity, so a failure here is shown inline and the
@@ -1863,6 +2106,7 @@ async function submitBooking(form) {
   const payload = {
     booking_type: type,
     notes: String(data.get('notes') || '').trim(),
+    design_notes: String(data.get('design_notes') || '').trim(),
     items: state.cart.map((item) => ({
       service_id: item.service_id,
       qty: item.qty,
@@ -1908,13 +2152,21 @@ async function submitBooking(form) {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    // The booking exists now, so the queued references have an owner to attach
+    // to. A failed upload never loses the booking: the drawer can retry.
+    let uploadFailures = 0;
+    if (designQueue.length) {
+      button.textContent = 'Uploading designs…';
+      uploadFailures = await uploadDesignQueue(booking.id);
+    }
+    clearDesignQueue();
     state.bookings.unshift(booking);
     state.cart = [];
     state.availability = null;
     clearBookingDraft();
     renderChrome();
     renderView();
-    showBookingSuccess(booking);
+    showBookingSuccess(booking, uploadFailures);
   } catch (error) {
     setError(error.message);
     button.disabled = false;
@@ -1922,7 +2174,7 @@ async function submitBooking(form) {
   }
 }
 
-function showBookingSuccess(booking) {
+function showBookingSuccess(booking, uploadFailures = 0) {
   state.lastModalFocus = document.activeElement;
   modalRoot.innerHTML = `
     <div class="modal-overlay" data-modal-overlay>
@@ -1942,6 +2194,11 @@ function showBookingSuccess(booking) {
         ${
           Number(booking.discount_amount)
             ? `<p class="tiny">Discount applied: ${esc(booking.discount_label)} — you save ${peso(booking.discount_amount)}.</p>`
+            : ''
+        }
+        ${
+          uploadFailures
+            ? `<p class="tiny" style="color:#b3261e">${uploadFailures} file${uploadFailures === 1 ? '' : 's'} could not be uploaded. Open the booking to retry the upload.</p>`
             : ''
         }
         <p class="tiny">You can follow the status and payment updates from your bookings page.</p>
@@ -3940,12 +4197,160 @@ function renderReports() {
                 <p>Generate a report to see bookings, payments, and crew workload for the dates you choose.</p>
               </div>`
       }
+    </div>
+    ${cancellationsPanelTemplate()}`;
+}
+
+/* ---------- Cancellation reporting ---------- */
+
+function cancellationsPanelTemplate() {
+  const data = state.cancellations;
+  return `
+    <div class="panel" style="margin-top:20px" data-cancellations-panel>
+      <div class="panel-head">
+        <div><h3>Cancellations</h3><p>Why bookings were cancelled between ${formatDate(state.reportFrom, 'short')} and ${formatDate(state.reportTo, 'short')}.</p></div>
+        <div class="page-actions"><button class="btn btn-sm" type="button" data-cancellations-load>${data ? 'Refresh' : 'Load cancellations'}</button></div>
+      </div>
+      <div class="panel-body" data-cancellations-body>
+        ${data ? cancellationReportBody(data) : '<p class="tiny muted">Load the cancellation log for the same period as the report above.</p>'}
+      </div>
     </div>`;
+}
+
+function cancellationReportBody(data) {
+  const { summary, cancellations, scope } = data;
+  const topReasons = (summary.by_reason || []).slice(0, 5);
+  return `
+    <div class="report-summary" style="margin-bottom:16px">
+      <div class="report-stat"><span>Cancellations</span><strong>${summary.total}</strong></div>
+      <div class="report-stat"><span>Customer-initiated</span><strong>${summary.customer_initiated}</strong></div>
+      <div class="report-stat"><span>Branch-initiated</span><strong>${summary.branch_initiated}</strong></div>
+      <div class="report-stat"><span>Most common reason</span><strong style="font-size:.8rem">${esc(topReasons[0]?.label || '—')}</strong></div>
+    </div>
+    <form class="report-controls" data-cancellation-filters>
+      ${
+        scope.branches.length
+          ? `<div class="field"><label for="cancel-branch">Branch</label><select class="select" id="cancel-branch" name="branch"><option value="">All branches</option>${scope.branches
+              .map((branch) => `<option value="${esc(branch.id)}">${esc(branch.name)}</option>`)
+              .join('')}</select></div>`
+          : ''
+      }
+      <div class="field"><label for="cancel-reason-filter">Reason</label><select class="select" id="cancel-reason-filter" name="reason"><option value="">All reasons</option>${scope.reasons
+        .map((reason) => `<option value="${esc(reason.code)}">${esc(reason.label)}</option>`)
+        .join('')}</select></div>
+      <div class="field"><label for="cancel-by">Initiated by</label><select class="select" id="cancel-by" name="by"><option value="">Anyone</option><option value="customer">Customer</option><option value="branch">Branch</option></select></div>
+      <button class="btn" type="button" data-cancellations-load>Apply filters</button>
+    </form>
+    ${
+      cancellations.length
+        ? `<div class="table-wrap"><table class="data-table">
+            <thead><tr><th>Reference</th><th>Customer</th><th>Branch</th><th>Reason</th><th>Initiated by</th><th>Cancelled</th></tr></thead>
+            <tbody>${cancellations
+              .map(
+                (row) => `<tr>
+                  <td><span class="cell-main">${esc(row.booking_ref)}</span></td>
+                  <td>${esc(row.customer_name)}</td>
+                  <td>${esc(row.branch_name)}</td>
+                  <td>${esc(row.reason_label)}${
+                    row.details ? `<br><span class="tiny muted">${esc(row.details)}</span>` : ''
+                  }</td>
+                  <td>${row.cancelled_by_role === 'customer' ? 'Customer' : 'Branch'} · ${esc(row.cancelled_by_name)}</td>
+                  <td>${formatDateTime(row.created_at)}</td>
+                </tr>`
+              )
+              .join('')}</tbody>
+          </table></div>`
+        : '<div class="table-empty">No cancellations match these filters.</div>'
+    }
+    ${
+      topReasons.length > 1
+        ? `<h4 style="margin-top:18px;font-size:.8rem">Most common reasons</h4>
+           <div class="bar-list">${topReasons
+             .map(
+               (reason) => `<div class="bar-item"><span>${esc(reason.label)}</span><div class="bar-track"><i style="width:${Math.round(
+                 (reason.count / Math.max(1, summary.total)) * 100
+               )}%"></i></div><strong>${reason.count}</strong></div>`
+             )
+             .join('')}</div>`
+        : ''
+    }`;
+}
+
+async function loadCancellations() {
+  const panel = document.querySelector('[data-cancellations-panel]');
+  const filters = panel?.querySelector('[data-cancellation-filters]');
+  const params = new URLSearchParams({ from: state.reportFrom, to: state.reportTo });
+  if (filters) {
+    const data = new FormData(filters);
+    if (data.get('branch')) params.set('branch', data.get('branch'));
+    if (data.get('reason')) params.set('reason', data.get('reason'));
+    if (data.get('by')) params.set('by', data.get('by'));
+  }
+  const button = panel?.querySelector('[data-cancellations-load]');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Loading…';
+  }
+  try {
+    state.cancellations = await api(`/api/cancellations?${params.toString()}`);
+    renderView();
+  } catch (error) {
+    toast(error.message, 'error');
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Load cancellations';
+    }
+  }
 }
 
 /* ---------- Drawer ---------- */
 
 /* ---------- Drawer and modal templates ---------- */
+
+/** One stored file. Images preview inline; PDFs and design sources open. */
+function designFileRow(file, booking) {
+  const isImage = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mime);
+  const canDelete =
+    state.user.role === 'admin' ||
+    state.user.role === 'branch_admin' ||
+    (state.user.role === 'customer' && booking?.status === 'pending');
+  return `
+    <div class="design-file" data-design-file="${esc(file.id)}">
+      ${
+        isImage
+          ? `<img src="${file.url}" alt="${esc(file.name)}" loading="lazy" />`
+          : `<span class="design-file-icon">${esc(String(file.extension || 'file').toUpperCase())}</span>`
+      }
+      <div class="design-file-meta">
+        <strong>${esc(file.name)}<span class="design-kind-badge">${file.kind === 'final' ? 'Final design' : 'Reference'}</span></strong>
+        <small>${formatBytes(file.bytes)} · ${formatDateTime(file.created_at)}${file.uploaded_by?.name ? ` · ${esc(file.uploaded_by.name)}` : ''}</small>
+      </div>
+      <div class="design-file-actions">
+        ${isImage ? '' : `<a class="btn btn-sm" href="${file.url}" target="_blank" rel="noopener">Open</a>`}
+        <a class="btn btn-sm" href="${file.url}?download=1">Download</a>
+        ${
+          canDelete
+            ? `<button class="btn btn-sm btn-danger" type="button" data-design-delete="${esc(file.id)}" data-booking="${esc(file.booking_id || booking?.id || '')}">Remove</button>`
+            : ''
+        }
+      </div>
+    </div>`;
+}
+
+/** Fills the drawer's file list after the booking detail is already on screen. */
+async function loadDesignFiles(bookingId) {
+  const box = drawerRoot.querySelector(`[data-design-files-list="${bookingId}"]`);
+  if (!box) return;
+  try {
+    const { files } = await api(`/api/bookings/${encodeURIComponent(bookingId)}/files`);
+    const booking = state.activeBooking;
+    box.innerHTML = files.length
+      ? files.map((file) => designFileRow({ ...file, booking_id: bookingId }, booking)).join('')
+      : '<p class="design-empty">No design or reference files yet.</p>';
+  } catch (error) {
+    box.innerHTML = `<p class="design-empty">${esc(error.message)}</p>`;
+  }
+}
 
 function drawerItemsTemplate(booking) {
   return (booking.items || [])
@@ -4055,6 +4460,46 @@ function drawerTemplate(booking) {
                 : ''
             }
             <div class="drawer-total"><span>Booking total</span><strong>${peso(booking.total)}</strong></div>
+          </section>
+
+          <section class="drawer-section" data-design-files-section>
+            <h3>Design &amp; reference files</h3>
+            <p class="form-note">References guide the design. They are not automatically treated as the final print file.</p>
+            <div class="design-files-list" data-design-files-list="${esc(booking.id)}">Loading…</div>
+            ${
+              booking.design_notes
+                ? `<div class="drawer-note"><span>Additional design instructions</span><p>${esc(booking.design_notes)}</p></div>`
+                : ''
+            }
+            ${
+              role === 'customer' && ['pending', 'confirmed'].includes(booking.status)
+                ? `<div class="design-add">
+                    <input type="file" data-drawer-design-input accept=".jpg,.jpeg,.png,.webp,.pdf,.psd,.ai,.svg" aria-label="Choose a design file" />
+                    <select data-drawer-design-kind aria-label="File type">
+                      <option value="reference">Reference / inspiration</option>
+                      <option value="final">Final design to print</option>
+                    </select>
+                    <button class="btn btn-sm" type="button" data-drawer-design-upload="${esc(booking.id)}">Upload file</button>
+                  </div>`
+                : ''
+            }
+            ${
+              adminLike
+                ? `<form data-form-type="design" data-id="${esc(booking.id)}">
+                    <div class="drawer-form" style="margin-top:14px">
+                      <div class="field field-full">
+                        <label for="design-status">Design status</label>
+                        <select class="select" id="design-status" name="design_status">
+                          ${optionsHtml(Object.entries(DESIGN_STATUS_LABELS), booking.design_status || 'for_review')}
+                        </select>
+                      </div>
+                      <p class="form-note">This only records design progress. The booking status and the files stay as they are.</p>
+                      <div class="form-error field-full" data-drawer-error></div>
+                      <div class="drawer-form-actions"><button class="btn btn-primary" type="submit">Save design status</button></div>
+                    </div>
+                  </form>`
+                : ''
+            }
           </section>
 
           <section class="drawer-section">
@@ -4221,6 +4666,21 @@ function drawerTemplate(booking) {
               : ''
           }
 
+          ${
+            booking.cancellation
+              ? `<section class="drawer-section">
+                  <h3>Cancellation</h3>
+                  <div class="detail-grid">
+                    <div><span>Reason</span><strong>${esc(booking.cancellation.reason_label)}</strong></div>
+                    <div><span>Cancelled by</span><strong>${booking.cancellation.cancelled_by_role === 'customer' ? 'Customer' : 'Branch'}</strong></div>
+                    <div><span>When</span><strong>${formatDateTime(booking.cancellation.created_at)}</strong></div>
+                    <div><span>Status change</span><strong>${esc(statusLabel(booking.cancellation.previous_status))} → cancelled</strong></div>
+                  </div>
+                  ${booking.cancellation.details ? `<div class="drawer-note"><span>Additional explanation</span><p>${esc(booking.cancellation.details)}</p></div>` : ''}
+                </section>`
+              : ''
+          }
+
           <section class="drawer-section">
             <h3>Timeline</h3>
             ${
@@ -4355,6 +4815,8 @@ function renderDrawer(booking, scroll = 0) {
   syncBodyLock();
   const body = drawerRoot.querySelector('.drawer-body');
   if (body) body.scrollTop = scroll;
+  const filesBox = drawerRoot.querySelector('[data-design-files-list]');
+  if (filesBox) loadDesignFiles(filesBox.dataset.designFilesList);
 }
 
 /**
@@ -4429,9 +4891,18 @@ async function submitDrawerForm(form) {
   };
   setError('');
   const data = new FormData(form);
+  // Choosing "cancelled" here cannot save directly: the reason dialog opens
+  // instead and writes the status only after confirmation.
+  if (type === 'admin-booking' && data.get('status') === 'cancelled' && state.activeBooking) {
+    openCancellationModal(state.activeBooking, { actor: 'branch' });
+    return;
+  }
   let payload;
   let endpoint = `/api/bookings/${encodeURIComponent(id)}`;
-  if (type === 'payment') {
+  if (type === 'design') {
+    endpoint += '/design';
+    payload = { design_status: data.get('design_status') };
+  } else if (type === 'payment') {
     endpoint += '/payment';
     payload = {
       payment_status: data.get('payment_status'),
@@ -4481,18 +4952,168 @@ async function submitDrawerForm(form) {
   }
 }
 
-async function cancelBooking(id) {
+/* ---------- Cancellation with a required reason ---------- */
+
+// Holds the in-progress cancellation while the modal moves from the reason form
+// to the confirmation step. Never submitted without a validated reason.
+let cancellationDraft = null;
+
+function cancellationSummary(booking) {
+  const services = (booking.items || []).map((item) => item.name).join(', ') || 'Services to be confirmed';
+  return `
+    <div class="detail-grid cancel-summary">
+      <div><span>Booking reference</span><strong>${esc(booking.ref)}</strong></div>
+      <div><span>Customer</span><strong>${esc(booking.customer?.name || state.user.name || '—')}</strong></div>
+      <div><span>Service</span><strong>${esc(services)}</strong></div>
+      <div><span>Scheduled</span><strong>${formatDate(booking.event_date)}${booking.event_time ? ` · ${esc(formatTime(booking.event_time))}` : ''}</strong></div>
+    </div>`;
+}
+
+async function openCancellationModal(booking, { actor = 'customer' } = {}) {
+  let reasons = [];
   try {
-    const { booking } = await api(`/api/bookings/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ action: 'cancel' }),
-    });
-    const scroll = drawerRoot.querySelector('.drawer-body')?.scrollTop || 0;
-    refreshAfterBooking(booking);
-    renderDrawer(booking, scroll);
-    toast('Request cancelled.');
+    ({ reasons } = await api('/api/cancellation-reasons'));
   } catch (error) {
     toast(error.message, 'error');
+    return;
+  }
+  cancellationDraft = {
+    booking,
+    actor,
+    reasons,
+    reason: '',
+    details: '',
+    step: 'form',
+    error: '',
+  };
+  state.lastModalFocus = document.activeElement;
+  renderCancellationModal();
+}
+
+function renderCancellationModal() {
+  const draft = cancellationDraft;
+  if (!draft) return;
+  const { booking, actor, reasons, step } = draft;
+  const selected = reasons.find((item) => item.code === draft.reason);
+  const requiresDetails = selected?.requires_details === true;
+  modalRoot.innerHTML = `
+    <div class="modal-overlay" data-modal-overlay>
+      <div class="modal cancel-modal" role="dialog" aria-modal="true" aria-labelledby="cancel-title">
+        <button class="modal-close" type="button" data-modal-close aria-label="Close">${ICONS.close}</button>
+        <p class="auth-eyebrow">${actor === 'customer' ? 'Cancel your booking' : 'Cancel a customer booking'}</p>
+        <h2 id="cancel-title">${step === 'review' ? 'Confirm cancellation' : 'Why is this booking being cancelled?'}</h2>
+        ${cancellationSummary(booking)}
+        ${
+          step === 'review'
+            ? `<div class="cancel-review">
+                <p><strong>${esc(booking.ref)}</strong> will be marked as <strong>cancelled</strong>. The booking record, its timeline, and any uploaded designs stay available.</p>
+                <div class="drawer-note"><span>Reason</span><p>${esc(selected?.label || '')}${draft.details ? ` — ${esc(draft.details)}` : ''}</p></div>
+                <p class="form-note">${
+                  actor === 'customer'
+                    ? "This cannot be undone from your account. Any payment already recorded is handled separately under the studio's refund policy."
+                    : 'The customer will be notified in the app. Payments already recorded are unaffected.'
+                }</p>
+                <div class="form-error ${draft.error ? 'show' : ''}" role="alert">${esc(draft.error)}</div>
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-cancel-back>Go back</button>
+                  <button class="btn btn-danger" type="button" data-cancel-confirm>Confirm cancellation</button>
+                </div>
+              </div>`
+            : `<form id="cancellation-form" novalidate>
+                <div class="field">
+                  <label for="cancel-reason">Cancellation reason</label>
+                  <select class="select" id="cancel-reason" name="reason" required>
+                    <option value="">Choose a reason</option>
+                    ${reasons
+                      .map(
+                        (item) =>
+                          `<option value="${esc(item.code)}" ${item.code === draft.reason ? 'selected' : ''}>${esc(item.label)}</option>`
+                      )
+                      .join('')}
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="cancel-details">Additional explanation ${requiresDetails ? '' : '<span class="field-hint">optional</span>'}</label>
+                  <textarea class="textarea" id="cancel-details" name="details" maxlength="1000" placeholder="${
+                    requiresDetails ? 'Explain why this booking is being cancelled (required).' : 'Anything else the studio should know.'
+                  }">${esc(draft.details)}</textarea>
+                </div>
+                <p class="form-note">A reason is required. ${
+                  actor === 'customer'
+                    ? 'The studio keeps the booking record and its history.'
+                    : 'The customer is told which reason the branch gave.'
+                }</p>
+                <div class="form-error ${draft.error ? 'show' : ''}" role="alert">${esc(draft.error)}</div>
+                <div class="modal-actions">
+                  <button class="btn" type="button" data-modal-close>Go back</button>
+                  <button class="btn btn-danger" type="submit">Continue</button>
+                </div>
+              </form>`
+        }
+      </div>
+    </div>`;
+  revealLayer(modalRoot);
+  syncBodyLock();
+  modalRoot.querySelector(step === 'review' ? '[data-cancel-confirm]' : '#cancel-reason')?.focus();
+
+  const form = modalRoot.querySelector('#cancellation-form');
+  form?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const reason = String(data.get('reason') || '');
+    const details = String(data.get('details') || '').trim();
+    const entry = draft.reasons.find((item) => item.code === reason);
+    if (!entry) {
+      draft.error = 'Choose a cancellation reason.';
+      return renderCancellationModal();
+    }
+    if (entry.requires_details && details.length < 5) {
+      draft.error = 'Explain the reason for cancelling — at least a short sentence.';
+      return renderCancellationModal();
+    }
+    draft.reason = reason;
+    draft.details = details;
+    draft.step = 'review';
+    draft.error = '';
+    renderCancellationModal();
+  });
+  modalRoot.querySelector('#cancel-reason')?.addEventListener('change', (event) => {
+    draft.reason = event.target.value;
+    draft.step = 'form';
+    draft.error = '';
+    renderCancellationModal();
+  });
+}
+
+async function confirmCancellation() {
+  const draft = cancellationDraft;
+  if (!draft) return;
+  const button = modalRoot.querySelector('[data-cancel-confirm]');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Cancelling…';
+  }
+  const body =
+    draft.actor === 'customer'
+      ? { action: 'cancel', reason: draft.reason, reason_details: draft.details }
+      : { status: 'cancelled', reason: draft.reason, reason_details: draft.details };
+  try {
+    const { booking } = await api(`/api/bookings/${encodeURIComponent(draft.booking.id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+    const scroll = drawerRoot.querySelector('.drawer-body')?.scrollTop || 0;
+    const wasCustomer = draft.actor === 'customer';
+    cancellationDraft = null;
+    closeModal({ restoreFocus: false });
+    refreshAfterBooking(booking);
+    if (drawerRoot.firstElementChild) renderDrawer(booking, scroll);
+    toast(
+      wasCustomer ? 'Your booking has been successfully cancelled.' : `Booking ${booking.ref} has been cancelled.`
+    );
+  } catch (error) {
+    draft.error = error.message;
+    renderCancellationModal();
   }
 }
 
@@ -4721,16 +5342,89 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
-  const cancel = target.closest('[data-cancel-booking]');
-  if (cancel) {
-    if (cancel.dataset.armed !== 'true') {
-      cancel.dataset.armed = 'true';
-      cancel.textContent = 'Tap again to cancel';
-      toast('Tap once more to cancel this request.');
+  const queueRemove = target.closest('[data-design-remove]');
+  if (queueRemove) {
+    removeDesignFile(queueRemove.dataset.designRemove);
+    return;
+  }
+
+  const designDelete = target.closest('[data-design-delete]');
+  if (designDelete) {
+    const bookingId = designDelete.dataset.booking;
+    if (!bookingId) return;
+    if (!window.confirm('Remove this file from the booking?')) return;
+    designDelete.disabled = true;
+    try {
+      await api(
+        `/api/bookings/${encodeURIComponent(bookingId)}/files/${encodeURIComponent(designDelete.dataset.designDelete)}`,
+        { method: 'DELETE' }
+      );
+      toast('File removed.');
+      await loadDesignFiles(bookingId);
+      const refreshed = await api(`/api/bookings/${encodeURIComponent(bookingId)}`);
+      refreshAfterBooking(refreshed.booking);
+    } catch (error) {
+      toast(error.message, 'error');
+      designDelete.disabled = false;
+    }
+    return;
+  }
+
+  const drawerUpload = target.closest('[data-drawer-design-upload]');
+  if (drawerUpload) {
+    const section = drawerUpload.closest('[data-design-files-section]');
+    const input = section?.querySelector('[data-drawer-design-input]');
+    const kindSelect = section?.querySelector('[data-drawer-design-kind]');
+    const file = input?.files?.[0];
+    const bookingId = drawerUpload.dataset.drawerDesignUpload;
+    if (!file) {
+      toast('Choose a file first.', 'error');
       return;
     }
-    cancel.disabled = true;
-    await cancelBooking(cancel.dataset.cancelBooking);
+    const label = drawerUpload.textContent;
+    drawerUpload.disabled = true;
+    drawerUpload.textContent = 'Uploading…';
+    try {
+      await uploadDesignFile(bookingId, {
+        file,
+        kind: kindSelect?.value === 'final' ? 'final' : 'reference',
+      });
+      toast('Design file uploaded.');
+      input.value = '';
+      await loadDesignFiles(bookingId);
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      drawerUpload.disabled = false;
+      drawerUpload.textContent = label;
+    }
+    return;
+  }
+
+  const cancel = target.closest('[data-cancel-booking]');
+  if (cancel) {
+    const booking =
+      state.activeBooking || state.bookings.find((item) => item.id === cancel.dataset.cancelBooking);
+    if (booking) openCancellationModal(booking, { actor: 'customer' });
+    return;
+  }
+
+  if (target.closest('[data-cancel-back]')) {
+    if (cancellationDraft) {
+      cancellationDraft.step = 'form';
+      cancellationDraft.error = '';
+      renderCancellationModal();
+    }
+    return;
+  }
+
+  if (target.closest('[data-cancel-confirm]')) {
+    await confirmCancellation();
+    return;
+  }
+
+  if (target.closest('[data-cancellations-load]')) {
+    await loadCancellations();
     return;
   }
 

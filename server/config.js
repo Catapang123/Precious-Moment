@@ -61,6 +61,17 @@ export const MAIL_FROM =
 // with a persistent disk; the default is local development under public/.
 export const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || 'public/uploads/products');
 
+// Customer design uploads are private: never served from public/, never cached
+// long-term. Production uses a private Supabase Storage bucket (created by
+// supabase/migrate-booking-files.sql); development writes under DATA_DIR.
+export const SUPABASE_BOOKING_BUCKET = process.env.SUPABASE_BOOKING_BUCKET || 'booking-files';
+export const BOOKING_FILE_DIR = path.resolve(
+  process.env.BOOKING_FILE_DIR || path.join(DATA_DIR, 'booking-files')
+);
+// One file may be at most 10 MB, and one booking holds at most 8 files.
+export const BOOKING_FILE_MAX_BYTES = Number(process.env.BOOKING_FILE_MAX_BYTES) || 10 * 1024 * 1024;
+export const BOOKING_FILES_PER_BOOKING = Number(process.env.BOOKING_FILES_PER_BOOKING) || 8;
+
 /**
  * A production process must fail before it accepts a single request if its
  * critical dependencies are missing. This is deliberately a startup error, not

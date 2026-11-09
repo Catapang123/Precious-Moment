@@ -19,7 +19,32 @@ import { answerQuestion } from './assistant.js';
 import { capacityUnits, checkCapacity, toMinutes } from './availability.js';
 import { CATEGORIES, CLIENT_CATEGORY, CLIENT_PRICES, PRICE_REVIEWS, priceLine } from './catalog.js';
 import { locateBookingAddress } from './geo.js';
-import { APP_ORIGIN, DATA_DIR, IS_PROD, PASSWORD_RESET_TTL_MINUTES, TRUST_PROXY, UPLOAD_DIR } from './config.js';
+import {
+  APP_ORIGIN,
+  BOOKING_FILE_MAX_BYTES,
+  BOOKING_FILES_PER_BOOKING,
+  DATA_DIR,
+  IS_PROD,
+  PASSWORD_RESET_TTL_MINUTES,
+  TRUST_PROXY,
+  UPLOAD_DIR,
+} from './config.js';
+import {
+  DESIGN_KINDS,
+  DESIGN_STATUS_LABELS,
+  DESIGN_STATUSES,
+  inspectDesignFile,
+  openBookingFile,
+  originalFileName,
+  removeBookingFile,
+  saveBookingFile,
+} from './booking-files.js';
+import {
+  BRANCH_CANCELLATION_REASONS,
+  CUSTOMER_CANCELLATION_REASONS,
+  cancellationReasonsFor,
+  validateCancellationReason,
+} from './cancellations.js';
 import { inspectProductImage, removeProductImage, saveProductImage } from './images.js';
 import { sendPasswordResetEmail } from './mail.js';
 import { BOOKING_STATUSES, buildReport, reportCsv } from './reports.js';
@@ -375,6 +400,58 @@ async function bookingLists(store) {
     store.list('branches'),
   ]);
   return { users, updates, branches };
+}
+
+/** Files attached to one booking, oldest first. */
+async function bookingFilesFor(store, bookingId) {
+  const files = await store.list('booking_files');
+  return files
+    .filter((file) => file.booking_id === bookingId)
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+
+/** Public shape of one stored file; the bytes are fetched from `url`. */
+function bookingFileView(file, uploader) {
+  return {
+    id: file.id,
+    name: file.name,
+    mime: file.mime,
+    extension: file.extension,
+    bytes: Number(file.bytes) || 0,
+    kind: DESIGN_KINDS.includes(file.kind) ? file.kind : 'reference',
+    created_at: file.created_at,
+    uploaded_by: uploader ? { id: uploader.id, name: uploader.name, role: uploader.role } : null,
+    url: `/api/bookings/${encodeURIComponent(file.booking_id)}/files/${encodeURIComponent(file.id)}`,
+  };
+}
+
+/** The most recent cancellation event for a booking, if any. */
+async function latestCancellation(store, bookingId) {
+  const rows = await store.list('booking_cancellations');
+  return (
+    rows
+      .filter((row) => row.booking_id === bookingId)
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0] || null
+  );
+}
+
+/** Writes the immutable cancellation record; an earlier one is never touched. */
+async function recordCancellation(store, req, booking, { reason, previousStatus }) {
+  const row = {
+    id: crypto.randomUUID(),
+    booking_id: booking.id,
+    branch_id: booking.branch_id || null,
+    cancelled_by: req.user.id,
+    cancelled_by_role: req.user.role === 'customer' ? 'customer' : 'branch',
+    reason_code: reason.code,
+    reason_label: reason.label,
+    details: reason.details,
+    previous_status: previousStatus,
+    new_status: 'cancelled',
+    created_at: new Date().toISOString(),
+  };
+  await store.insert('booking_cancellations', row);
+  return row;
 }
 
 function branchAdminsFor(users, branchId) {
@@ -1533,8 +1610,13 @@ export function createApp(store) {
     requireAuth,
     wrap(async (req, res) => {
       const booking = await bookingAccess(store, req.params.id, req.user);
-      const { users, updates, branches } = await bookingLists(store);
-      json(res, 200, { booking: hydrateBooking(booking, users, updates, branches) });
+      const [{ users, updates, branches }, cancellation] = await Promise.all([
+        bookingLists(store),
+        latestCancellation(store, booking.id),
+      ]);
+      json(res, 200, {
+        booking: { ...hydrateBooking(booking, users, updates, branches), cancellation },
+      });
     })
   );
 
@@ -1549,8 +1631,10 @@ export function createApp(store) {
         throw fail(400, 'Choose whether this is an event booking or a pickup booking.');
       }
       const notes = String(req.body?.notes || '').trim();
+      const designNotes = String(req.body?.design_notes || '').trim();
       const rawItems = req.body?.items;
       if (notes.length > 2000) throw fail(400, 'Notes are too long.');
+      if (designNotes.length > 1000) throw fail(400, 'Additional design instructions are too long.');
       if (!Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > 25) {
         throw fail(400, 'Add at least one item to your booking.');
       }
@@ -1695,6 +1779,10 @@ export function createApp(store) {
         total,
         paid_at: null,
         items,
+        // References are uploaded after the booking exists; the status stays
+        // empty until the first file arrives.
+        design_notes: designNotes,
+        design_status: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -1815,12 +1903,25 @@ export function createApp(store) {
       const booking = await bookingAccess(store, req.params.id, req.user, { manage: true });
       const patch = {};
       const messages = [];
+      // Set only when this request cancels the booking; validated below.
+      let cancellation = null;
 
       if (req.user.role === 'customer') {
         if (req.body?.action !== 'cancel') throw fail(403, 'Customers can only cancel a pending request.');
+        if (booking.status === 'cancelled') throw fail(409, 'This booking is already cancelled.');
         if (booking.status !== 'pending') throw fail(409, 'Only pending requests can be cancelled.');
+        cancellation = validateCancellationReason({
+          role: 'customer',
+          reason: req.body?.reason,
+          details: req.body?.reason_details,
+        });
         patch.status = 'cancelled';
-        messages.push(['cancelled', 'Cancelled by the customer.']);
+        messages.push([
+          'cancelled',
+          `Cancelled by the customer. Reason: ${cancellation.label}${
+            cancellation.details ? ` — ${cancellation.details}` : ''
+          }.`,
+        ]);
       } else if (req.user.role === 'staff') {
         if (['completed', 'cancelled'].includes(booking.status)) {
           throw fail(409, 'This booking is already closed.');
@@ -1885,7 +1986,25 @@ export function createApp(store) {
         if (body.status !== undefined) {
           const status = String(body.status);
           if (!BOOKING_STATUSES.includes(status)) throw fail(400, 'Invalid booking status.');
-          if (status !== booking.status) {
+          if (booking.status === 'cancelled') throw fail(409, 'This booking is already cancelled.');
+          if (status === 'cancelled') {
+            // A branch may not cancel silently: the reason is part of the record.
+            if (booking.status === 'completed') {
+              throw fail(409, 'A completed booking cannot be cancelled.');
+            }
+            cancellation = validateCancellationReason({
+              role: 'branch',
+              reason: body.reason,
+              details: body.reason_details,
+            });
+            patch.status = 'cancelled';
+            messages.push([
+              'cancelled',
+              `Cancelled by ${req.user.role === 'branch_admin' ? 'the branch' : 'the studio'}. Reason: ${
+                cancellation.label
+              }${cancellation.details ? ` — ${cancellation.details}` : ''}.`,
+            ]);
+          } else if (status !== booking.status) {
             patch.status = status;
             messages.push([status, `Status updated to ${status.replace('_', ' ')}.`]);
           }
@@ -1982,6 +2101,33 @@ export function createApp(store) {
         await addTimeline(store, booking.id, req.user.id, status, message);
       }
 
+      if (cancellation && updated?.status === 'cancelled') {
+        await recordCancellation(store, req, booking, {
+          reason: cancellation,
+          previousStatus: booking.status,
+        });
+        // The customer must learn about a branch cancellation inside the app.
+        // A customer's own cancellation needs no notification.
+        if (req.user.role !== 'customer') {
+          try {
+            await store.insert('notifications', {
+              id: crypto.randomUUID(),
+              user_id: booking.customer_id,
+              branch_id: booking.branch_id || null,
+              booking_id: booking.id,
+              title: `Booking ${booking.ref} cancelled`,
+              message: `Your booking has been cancelled by the branch. Reason: ${
+                cancellation.label
+              }${cancellation.details ? ` — ${cancellation.details}` : ''}. Any payment already recorded is handled separately under the studio's refund policy.`,
+              read_at: null,
+              created_at: new Date().toISOString(),
+            });
+          } catch (error) {
+            console.error('Could not record cancellation notification:', error.message);
+          }
+        }
+      }
+
       await audit(store, req, {
         action: patch.status === 'cancelled' ? 'booking.cancelled' : 'booking.updated',
         actorId: req.user.id,
@@ -1995,8 +2141,13 @@ export function createApp(store) {
         },
       });
 
-      const { users, updates, branches } = await bookingLists(store);
-      json(res, 200, { booking: hydrateBooking(updated, users, updates, branches) });
+      const [{ users, updates, branches }, latest] = await Promise.all([
+        bookingLists(store),
+        latestCancellation(store, booking.id),
+      ]);
+      json(res, 200, {
+        booking: { ...hydrateBooking(updated, users, updates, branches), cancellation: latest },
+      });
     })
   );
 
@@ -2060,6 +2211,314 @@ export function createApp(store) {
         },
       });
 
+      const { users, updates, branches } = await bookingLists(store);
+      json(res, 200, { booking: hydrateBooking(updated, users, updates, branches) });
+    })
+  );
+
+  /* ---------- Cancellation reasons and history ---------- */
+
+  app.get('/api/cancellation-reasons', requireAuth, (req, res) => {
+    json(res, 200, { reasons: cancellationReasonsFor(req.user.role) });
+  });
+
+  app.get(
+    '/api/cancellations',
+    requireRole('admin', 'branch_admin'),
+    wrap(async (req, res) => {
+      const from = String(req.query.from || '');
+      const to = String(req.query.to || '');
+      if (from && !validDate(from)) throw fail(400, 'Choose a valid start date.');
+      if (to && !validDate(to)) throw fail(400, 'Choose a valid end date.');
+      const branchFilter = String(req.query.branch || '');
+      const reasonFilter = String(req.query.reason || '');
+      const byFilter = String(req.query.by || '');
+      // Branch heads only ever see their own branch, whatever they ask for.
+      if (req.user.role === 'branch_admin' && branchFilter && branchFilter !== req.user.branch_id) {
+        throw fail(403, 'You can only view cancellations for your branch.');
+      }
+
+      const [rows, bookings, users, branches] = await Promise.all([
+        store.list('booking_cancellations'),
+        store.list('bookings'),
+        store.list('users'),
+        store.list('branches'),
+      ]);
+      const bookingMap = new Map(bookings.map((booking) => [booking.id, booking]));
+      const userMap = new Map(users.map((user) => [user.id, user]));
+      const branchMap = new Map(branches.map((branch) => [branch.id, branch]));
+
+      const visible = rows
+        .filter(
+          (row) => req.user.role === 'admin' || (row.branch_id && row.branch_id === req.user.branch_id)
+        )
+        .filter((row) => {
+          const day = String(row.created_at || '').slice(0, 10);
+          if (from && day < from) return false;
+          if (to && day > to) return false;
+          if (branchFilter && row.branch_id !== branchFilter) return false;
+          if (reasonFilter && row.reason_code !== reasonFilter) return false;
+          if (byFilter && row.cancelled_by_role !== byFilter) return false;
+          return true;
+        })
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+      const byReason = new Map();
+      for (const row of visible) {
+        const entry = byReason.get(row.reason_code) || {
+          code: row.reason_code,
+          label: row.reason_label,
+          count: 0,
+        };
+        entry.count += 1;
+        byReason.set(row.reason_code, entry);
+      }
+
+      json(res, 200, {
+        cancellations: visible.map((row) => {
+          const booking = bookingMap.get(row.booking_id);
+          return {
+            ...row,
+            booking_ref: booking?.ref || '—',
+            customer_name: userMap.get(booking?.customer_id)?.name || '—',
+            branch_name: branchMap.get(row.branch_id)?.name || '—',
+            cancelled_by_name: userMap.get(row.cancelled_by)?.name || '—',
+          };
+        }),
+        summary: {
+          total: visible.length,
+          by_reason: [...byReason.values()].sort((a, b) => b.count - a.count),
+          customer_initiated: visible.filter((row) => row.cancelled_by_role === 'customer').length,
+          branch_initiated: visible.filter((row) => row.cancelled_by_role === 'branch').length,
+        },
+        scope: {
+          branches:
+            req.user.role === 'admin' ? branches.map((branch) => ({ id: branch.id, name: branch.name })) : [],
+          reasons: [...CUSTOMER_CANCELLATION_REASONS, ...BRANCH_CANCELLATION_REASONS].reduce(
+            (list, reason) => {
+              if (!list.some((item) => item.code === reason.code)) {
+                list.push({ code: reason.code, label: reason.label });
+              }
+              return list;
+            },
+            []
+          ),
+        },
+      });
+    })
+  );
+
+  /* ---------- Customer design and reference files ---------- */
+
+  // Files are private. The browser never sees a storage URL for a booking it
+  // cannot read: every request re-checks the same booking access rules, and a
+  // production read is a 5-minute signed URL, not a public object.
+  const canAddDesignFiles = (user, booking) =>
+    user.role === 'admin' ||
+    user.role === 'branch_admin' ||
+    (user.role === 'customer' && booking.customer_id === user.id);
+
+  app.get(
+    '/api/bookings/:id/files',
+    requireAuth,
+    wrap(async (req, res) => {
+      const booking = await bookingAccess(store, req.params.id, req.user);
+      const [files, users] = await Promise.all([bookingFilesFor(store, booking.id), store.list('users')]);
+      const userMap = new Map(users.map((user) => [user.id, user]));
+      json(res, 200, {
+        files: files.map((file) => bookingFileView(file, userMap.get(file.uploaded_by))),
+        design_notes: booking.design_notes || '',
+        design_status: booking.design_status || null,
+        design_status_label: DESIGN_STATUS_LABELS[booking.design_status] || '',
+      });
+    })
+  );
+
+  app.post(
+    '/api/bookings/:id/files',
+    requireAuth,
+    express.raw({
+      type: [
+        'image/jpeg',
+        'image/jpg',
+        'image/pjpeg',
+        'image/png',
+        'image/webp',
+        'application/pdf',
+        'image/vnd.adobe.photoshop',
+        'application/illustrator',
+        'application/postscript',
+        'image/svg+xml',
+        'application/octet-stream',
+      ],
+      limit: `${Math.ceil(BOOKING_FILE_MAX_BYTES / (1024 * 1024))}mb`,
+    }),
+    wrap(async (req, res) => {
+      const booking = await bookingAccess(store, req.params.id, req.user, { manage: true });
+      if (!['customer', 'admin', 'branch_admin'].includes(req.user.role)) {
+        throw fail(403, 'Only the customer, a branch admin, or the studio owner can add design files.');
+      }
+      if (!canAddDesignFiles(req.user, booking)) throw fail(403, 'You do not have access to this booking.');
+      if (req.user.role === 'customer' && !['pending', 'confirmed'].includes(booking.status)) {
+        throw fail(409, 'Designs can be added while the booking is pending or confirmed.');
+      }
+      if (!Buffer.isBuffer(req.body) || !req.body.length) {
+        throw fail(415, 'Choose a JPG, PNG, WEBP, PDF, PSD, AI, or SVG file.');
+      }
+      const existing = await bookingFilesFor(store, booking.id);
+      if (existing.length >= BOOKING_FILES_PER_BOOKING) {
+        throw fail(
+          409,
+          `This booking already has ${BOOKING_FILES_PER_BOOKING} files. Remove one before adding another.`
+        );
+      }
+
+      let rawName = String(req.get('x-file-name') || '');
+      try {
+        rawName = decodeURIComponent(rawName);
+      } catch {
+        // A malformed header is just a bad filename, not a server error.
+      }
+      const name = originalFileName(rawName);
+      const requestedKind = String(req.get('x-file-kind') || '');
+      const kind = DESIGN_KINDS.includes(requestedKind) ? requestedKind : 'reference';
+      const inspected = inspectDesignFile(req.body, {
+        name,
+        declaredMime: req.get('content-type') || '',
+      });
+
+      const stored = await saveBookingFile({
+        customerId: booking.customer_id,
+        bookingId: booking.id,
+        buffer: req.body,
+        mime: inspected.mime,
+        extension: inspected.extension,
+      });
+      const now = new Date().toISOString();
+      const row = {
+        id: crypto.randomUUID(),
+        booking_id: booking.id,
+        customer_id: booking.customer_id,
+        uploaded_by: req.user.id,
+        kind,
+        name,
+        mime: inspected.mime,
+        extension: inspected.extension,
+        bytes: inspected.bytes,
+        storage: stored.storage,
+        storage_path: stored.path,
+        created_at: now,
+      };
+      try {
+        await store.insert('booking_files', row);
+      } catch (error) {
+        await removeBookingFile(row).catch(() => {});
+        throw error;
+      }
+      // The first upload opens the design workflow. Later uploads never move a
+      // status an administrator already set.
+      if (!booking.design_status) {
+        await store.update('bookings', booking.id, { design_status: 'for_review', updated_at: now });
+      }
+      await addTimeline(
+        store,
+        booking.id,
+        req.user.id,
+        booking.status,
+        `${kind === 'final' ? 'Final design' : 'Reference file'} uploaded: ${name}.`
+      );
+      await audit(store, req, {
+        action: 'booking_file.uploaded',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'booking',
+        targetId: booking.id,
+        metadata: { ref: booking.ref, file: name, kind, bytes: inspected.bytes },
+      });
+      json(res, 201, { file: bookingFileView(row, req.user) });
+    })
+  );
+
+  app.get(
+    '/api/bookings/:id/files/:fileId',
+    requireAuth,
+    wrap(async (req, res) => {
+      const booking = await bookingAccess(store, req.params.id, req.user);
+      const file = await store.get('booking_files', req.params.fileId);
+      if (!file || file.booking_id !== booking.id) throw fail(404, 'That file could not be found.');
+      const download = req.query.download === '1' ? file.name : '';
+      const target = await openBookingFile(file, download);
+      if (target.url) return res.redirect(302, target.url);
+      res.setHeader('Content-Type', file.mime || 'application/octet-stream');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader(
+        'Content-Disposition',
+        `${download ? 'attachment' : 'inline'}; filename="${encodeURIComponent(file.name)}"`
+      );
+      res.sendFile(target.absolutePath, (error) => {
+        if (error && !res.headersSent) json(res, 404, { error: 'That file could not be found.' });
+      });
+    })
+  );
+
+  app.delete(
+    '/api/bookings/:id/files/:fileId',
+    requireAuth,
+    wrap(async (req, res) => {
+      const booking = await bookingAccess(store, req.params.id, req.user, { manage: true });
+      if (!['customer', 'admin', 'branch_admin'].includes(req.user.role)) {
+        throw fail(403, 'You cannot remove this file.');
+      }
+      if (req.user.role === 'customer') {
+        if (booking.customer_id !== req.user.id) throw fail(403, 'You do not have access to this booking.');
+        if (booking.status !== 'pending') throw fail(409, 'Files can only be removed while the booking is pending.');
+      }
+      const file = await store.get('booking_files', req.params.fileId);
+      if (!file || file.booking_id !== booking.id) throw fail(404, 'That file could not be found.');
+      await removeBookingFile(file);
+      await store.remove('booking_files', file.id);
+      await addTimeline(store, booking.id, req.user.id, booking.status, `Design file removed: ${file.name}.`);
+      await audit(store, req, {
+        action: 'booking_file.removed',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'booking',
+        targetId: booking.id,
+        metadata: { ref: booking.ref, file: file.name },
+      });
+      json(res, 200, { removed: file.id });
+    })
+  );
+
+  // Design progress is separate from the booking status: a confirmed booking
+  // can still be "for review", and a completed booking keeps its files.
+  app.patch(
+    '/api/bookings/:id/design',
+    requireRole('admin', 'branch_admin'),
+    wrap(async (req, res) => {
+      const booking = await bookingAccess(store, req.params.id, req.user, { manage: true });
+      const status = String(req.body?.design_status || '');
+      if (!DESIGN_STATUSES.includes(status)) throw fail(400, 'Choose a valid design status.');
+      const updated = await store.update('bookings', booking.id, {
+        design_status: status,
+        updated_at: new Date().toISOString(),
+      });
+      await addTimeline(
+        store,
+        booking.id,
+        req.user.id,
+        booking.status,
+        `Design status: ${DESIGN_STATUS_LABELS[status]}.`
+      );
+      await audit(store, req, {
+        action: 'booking.design_status',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'booking',
+        targetId: booking.id,
+        metadata: { ref: booking.ref, design_status: status },
+      });
       const { users, updates, branches } = await bookingLists(store);
       json(res, 200, { booking: hydrateBooking(updated, users, updates, branches) });
     })

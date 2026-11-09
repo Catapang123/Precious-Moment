@@ -102,6 +102,8 @@ create table if not exists public.pm_bookings (
   total numeric(12, 2) not null check (total >= 0),
   paid_at timestamptz,
   items jsonb not null default '[]'::jsonb,
+  design_notes text not null default '',
+  design_status text check (design_status in ('for_review', 'in_progress', 'for_approval', 'approved')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -152,6 +154,40 @@ create table if not exists public.pm_booking_updates (
   created_at timestamptz not null default now()
 );
 
+-- Customer design and reference files. Only metadata lives here; the bytes are
+-- in the private `booking-files` Storage bucket. Deleting a booking removes its
+-- rows, but nothing in the app deletes files when a status changes.
+create table if not exists public.pm_booking_files (
+  id text primary key,
+  booking_id text not null references public.pm_bookings(id) on delete cascade,
+  customer_id text not null references public.pm_users(id),
+  uploaded_by text references public.pm_users(id),
+  kind text not null default 'reference' check (kind in ('reference', 'final')),
+  name text not null,
+  mime text not null,
+  extension text not null default '',
+  bytes bigint not null default 0 check (bytes >= 0),
+  storage text not null default 'supabase' check (storage in ('supabase', 'local')),
+  storage_path text not null,
+  created_at timestamptz not null default now()
+);
+
+-- Structured cancellation history. The booking row holds the current status;
+-- this table preserves every cancellation event with its reason and actor.
+create table if not exists public.pm_booking_cancellations (
+  id text primary key,
+  booking_id text not null references public.pm_bookings(id) on delete cascade,
+  branch_id text references public.pm_branches(id),
+  cancelled_by text references public.pm_users(id),
+  cancelled_by_role text not null check (cancelled_by_role in ('customer', 'branch')),
+  reason_code text not null,
+  reason_label text not null,
+  details text not null default '',
+  previous_status text not null,
+  new_status text not null default 'cancelled',
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.pm_notifications (
   id text primary key,
   user_id text not null references public.pm_users(id) on delete cascade,
@@ -177,6 +213,11 @@ create index if not exists pm_password_resets_user_idx on public.pm_password_res
 create index if not exists pm_audit_logs_created_idx on public.pm_audit_logs (created_at desc);
 create index if not exists pm_audit_logs_actor_idx on public.pm_audit_logs (actor_id, created_at desc);
 create index if not exists pm_booking_updates_booking_idx on public.pm_booking_updates (booking_id, created_at);
+create index if not exists pm_booking_files_booking_idx on public.pm_booking_files (booking_id, created_at);
+create index if not exists pm_booking_files_customer_idx on public.pm_booking_files (customer_id);
+create index if not exists pm_booking_cancellations_booking_idx on public.pm_booking_cancellations (booking_id, created_at desc);
+create index if not exists pm_booking_cancellations_branch_idx on public.pm_booking_cancellations (branch_id, created_at desc);
+create index if not exists pm_booking_cancellations_reason_idx on public.pm_booking_cancellations (reason_code);
 
 -- The two studio branches. Bookings are routed to the nearest one.
 insert into public.pm_branches (id, name, address, lat, lng, map_url) values
@@ -207,7 +248,15 @@ alter table public.pm_notifications enable row level security;
 alter table public.pm_discounts enable row level security;
 alter table public.pm_password_resets enable row level security;
 alter table public.pm_audit_logs enable row level security;
+alter table public.pm_booking_files enable row level security;
+alter table public.pm_booking_cancellations enable row level security;
 
 -- Deliberately no anon/authenticated policies: the public API is the only
 -- client. The Node server connects with the service-role key, which bypasses
 -- RLS. Never expose the service-role key to the browser.
+
+-- Private bucket for customer design uploads. The server mints 5-minute signed
+-- URLs after checking booking access, so the bucket itself stays closed.
+insert into storage.buckets (id, name, public)
+values ('booking-files', 'booking-files', false)
+on conflict (id) do nothing;

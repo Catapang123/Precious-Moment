@@ -85,7 +85,7 @@ function setTab(mode, { focus = false } = {}) {
         ? 'Already have an account? <button class="link-button" type="button" data-switch-login>Sign in</button>'
         : 'New here? <button class="link-button" type="button" data-switch-register>Create an account</button>';
   }
-  title.textContent = active === 'register' ? 'Start something.' : 'Welcome back.';
+  title.textContent = active === 'register' ? 'Start something.' : 'Welcome to Precious Moments';
   subtitle.textContent =
     active === 'register'
       ? 'Create a customer account to send booking requests and follow every update.'
