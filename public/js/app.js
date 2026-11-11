@@ -194,8 +194,6 @@ const state = {
   reportLoading: false,
   reportError: '',
   reportSection: 'summary',
-  reportDrawerCollapsed: false,
-  reportDrawerOpen: false,
   bookingType: 'event',
   typeNotice: '',
   newProductOpen: false,
@@ -4252,54 +4250,41 @@ function renderReports() {
   const active = REPORT_SECTIONS.some((section) => section.key === state.reportSection)
     ? state.reportSection
     : 'summary';
-  const collapsed = state.reportDrawerCollapsed;
 
   viewRoot.innerHTML = `
     <div class="page-intro">
       <div><h2>Operational reports</h2><p>Generated from the live booking and payment records. Pick a period, then export it for your files.</p></div>
       <div class="page-actions">
-        <button class="btn report-menu-toggle" type="button" data-report-menu>${ICONS.bookings} Report sections</button>
+        <div class="report-section-picker">
+          <label for="report-section">Report section</label>
+          <select class="select" id="report-section">
+            ${REPORT_SECTIONS.map(
+              (section) => `<option value="${section.key}" ${active === section.key ? 'selected' : ''}>${esc(section.label)}</option>`
+            ).join('')}
+          </select>
+        </div>
         <a class="btn" href="${esc(csvHref)}" download>${ICONS.download} Download CSV</a>
       </div>
     </div>
-    <div class="report-layout ${collapsed ? 'is-collapsed' : ''} ${state.reportDrawerOpen ? 'drawer-open' : ''}" data-report-layout>
-      <aside class="report-drawer" id="report-drawer" aria-label="Report sections">
-        <div class="report-drawer-head">
-          <div><h3>Report sections</h3><p>Choose what to view</p></div>
-          <button class="icon-button report-drawer-collapse" type="button" data-report-collapse aria-label="${collapsed ? 'Expand report menu' : 'Collapse report menu'}" title="${collapsed ? 'Expand report menu' : 'Collapse report menu'}">${ICONS.chevron}</button>
-          <button class="icon-button report-drawer-close" type="button" data-report-drawer-close aria-label="Close report menu">${ICONS.close}</button>
-        </div>
-        <nav class="report-drawer-nav">
-          ${REPORT_SECTIONS.map(
-            (section) => `
-            <button class="report-drawer-item ${active === section.key ? 'active' : ''}" type="button" data-report-section="${section.key}" ${active === section.key ? 'aria-current="true"' : ''} title="${esc(section.label)}">
-              <span class="report-drawer-icon">${ICONS[section.icon] || ICONS.reports}</span>
-              <span class="report-drawer-copy"><strong>${esc(section.label)}</strong><small>${esc(section.note)}</small></span>
-            </button>`
-          ).join('')}
-        </nav>
-      </aside>
-      <div class="report-drawer-backdrop" data-report-drawer-close></div>
-      <section class="report-content" aria-label="Report content">
-        <div class="panel">
-          ${reportControlsTemplate(report)}
-          ${
-            state.reportLoading && !report
-              ? reportSkeleton()
-              : report && active !== 'cancellations'
-                ? `<div class="report-generated">${reportSectionHtml(active, report, statusMax, methodMax)}</div>`
-                : !report && active !== 'cancellations'
-                  ? `<div class="empty-state">
-                      <div class="empty-state-icon">${ICONS.reports}</div>
-                      <h3>Choose a period</h3>
-                      <p>Generate a report to see bookings, payments, and crew workload for the dates you choose.</p>
-                    </div>`
-                  : ''
-          }
-        </div>
-        ${active === 'cancellations' ? cancellationsPanelTemplate() : ''}
-      </section>
-    </div>`;
+    <section class="report-content" aria-label="Report content">
+      <div class="panel">
+        ${reportControlsTemplate(report)}
+        ${
+          state.reportLoading && !report
+            ? reportSkeleton()
+            : report && active !== 'cancellations'
+              ? `<div class="report-generated">${reportSectionHtml(active, report, statusMax, methodMax)}</div>`
+              : !report && active !== 'cancellations'
+                ? `<div class="empty-state">
+                    <div class="empty-state-icon">${ICONS.reports}</div>
+                    <h3>Choose a period</h3>
+                    <p>Generate a report to see bookings, payments, and crew workload for the dates you choose.</p>
+                  </div>`
+                : ''
+        }
+      </div>
+      ${active === 'cancellations' ? cancellationsPanelTemplate() : ''}
+    </section>`;
 }
 
 
@@ -5743,32 +5728,6 @@ document.addEventListener('click', async (event) => {
     renderView();
     return;
   }
-  const reportSectionButton = target.closest('[data-report-section]');
-  if (reportSectionButton) {
-    const fromInput = document.getElementById('report-from');
-    const toInput = document.getElementById('report-to');
-    if (fromInput?.value) state.reportFrom = fromInput.value;
-    if (toInput?.value) state.reportTo = toInput.value;
-    state.reportSection = reportSectionButton.dataset.reportSection || 'summary';
-    state.reportDrawerOpen = false;
-    renderView();
-    return;
-  }
-  if (target.closest('[data-report-collapse]')) {
-    state.reportDrawerCollapsed = !state.reportDrawerCollapsed;
-    renderView();
-    return;
-  }
-  if (target.closest('[data-report-menu]')) {
-    state.reportDrawerOpen = true;
-    document.querySelector('[data-report-layout]')?.classList.add('drawer-open');
-    return;
-  }
-  if (target.closest('[data-report-drawer-close]')) {
-    state.reportDrawerOpen = false;
-    document.querySelector('[data-report-layout]')?.classList.remove('drawer-open');
-    return;
-  }
   if (target.closest('[data-report-retry]')) {
     loadReport();
     return;
@@ -5803,6 +5762,16 @@ document.addEventListener('change', (event) => {
 
   if (target.matches('[data-image-input]')) {
     previewImageSelection(target);
+    return;
+  }
+
+  if (target.matches('#report-section')) {
+    const fromInput = document.getElementById('report-from');
+    const toInput = document.getElementById('report-to');
+    if (fromInput?.value) state.reportFrom = fromInput.value;
+    if (toInput?.value) state.reportTo = toInput.value;
+    state.reportSection = target.value;
+    renderView();
     return;
   }
 
