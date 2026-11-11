@@ -15,6 +15,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
+  IS_PROD,
+  STORE_MODE,
   SUPABASE_SERVICE_ROLE_KEY,
   SUPABASE_STORAGE_BUCKET,
   SUPABASE_URL,
@@ -215,6 +217,16 @@ export async function saveProductImage(buffer, image) {
       });
     }
     return data.publicUrl;
+  }
+
+  if (IS_PROD || STORE_MODE === 'supabase') {
+    console.error(
+      'Product image storage is not configured. Set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_STORAGE_BUCKET.'
+    );
+    throw Object.assign(
+      new Error('Image storage is not configured. Please contact the studio owner.'),
+      { status: 503 }
+    );
   }
 
   await fs.mkdir(UPLOAD_DIR, { recursive: true });

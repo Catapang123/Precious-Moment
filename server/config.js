@@ -19,7 +19,7 @@ export const SUPABASE_URL = process.env.SUPABASE_URL || '';
 export const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 // Public product-image bucket. Production requires this because the Render free
 // filesystem is ephemeral; local development falls back to UPLOAD_DIR.
-export const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || '';
+export const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'product-images';
 // Render terminates TLS in front of the app. Explicit trust keeps client IPs
 // useful for rate limiting; direct/local deployments should leave this off.
 export const TRUST_PROXY = process.env.TRUST_PROXY === '1' ? 1 : false;

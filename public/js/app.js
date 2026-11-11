@@ -1425,6 +1425,47 @@ function productImageMarkup(service, className = '') {
   return `<img class="${className}" src="${esc(image)}" alt="${esc(service.image_alt || `${service.name} product`)}" loading="lazy" />`;
 }
 
+// Saved files can disappear when a host restarts with an ephemeral disk.
+// Show the normal placeholder and tell an admin to re-upload instead of
+// leaving the browser's broken-image icon in the catalog or image manager.
+document.addEventListener(
+  'error',
+  (event) => {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement)) return;
+    const source = img.getAttribute('src') || '';
+    if (!source || source.startsWith('blob:') || source.startsWith('data:')) return;
+    const card = img.closest('[data-image-card]');
+    const productMedia = img.closest('[data-product-image], .measure-thumb, .price-image-thumb');
+    if (!card && !productMedia && !source.startsWith('/uploads/products/')) return;
+
+    const placeholder = document.createElement('span');
+    placeholder.className = 'product-image-missing';
+    placeholder.innerHTML = card
+      ? '<span>Image file missing</span><small>Upload it again</small>'
+      : '<span>Image pending</span><small>Studio photo needed</small>';
+
+    if (card) {
+      const status = card.querySelector('.image-status');
+      if (status) {
+        status.textContent = 'Image file missing';
+        status.className = 'image-status image-status--missing';
+      }
+      if (img.closest('[data-image-local-preview]')) img.replaceWith(placeholder);
+      imageMessage(card, 'The saved image file is missing from storage. Upload it again.');
+      return;
+    }
+
+    if (productMedia) {
+      productMedia.classList.add('product-card-media--missing');
+      productMedia.removeAttribute('data-product-image');
+      productMedia.querySelector('.product-card-zoom')?.remove();
+    }
+    img.replaceWith(placeholder);
+  },
+  true
+);
+
 function productCard(service) {
   const price = productStarting(service);
   const custom = service.pricing_mode === 'area';
