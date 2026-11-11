@@ -211,7 +211,11 @@ try {
   assert.ok(catalog.body.services.some((service) => service.id === 'tarpaulin'));
   assert.ok(catalog.body.services.some((service) => service.id === 'booth-360'));
   assert.equal(Number(catalog.body.services.find((service) => service.id === 'tarpaulin').price), 1200);
+  assert.equal(catalog.body.services.find((service) => service.id === 'tarpaulin').booking_availability, 'pickup');
+  assert.equal(catalog.body.services.find((service) => service.id === 'tarpaulin-custom').booking_availability, 'pickup');
+  assert.equal(catalog.body.services.find((service) => service.id === 'blackout-custom').booking_availability, 'pickup');
   const magnet = catalog.body.services.find((service) => service.id === 'magnet');
+  assert.equal(magnet.booking_availability, 'pickup');
   assert.deepEqual(
     magnet.tiers.map((row) => [row.min, row.max, Number(row.price)]),
     [
@@ -373,20 +377,36 @@ try {
       address: 'P. Burgos Street, Batangas City, Batangas',
       notes: 'Automated check.',
       items: [
-        { service_id: 'tarpaulin', qty: 1 },
+        { service_id: 'photo', qty: 1 },
         { service_id: 'photobooth-strips', qty: 1 },
       ],
     }),
   });
   assert.equal(booking.status, 201);
-  assert.equal(booking.body.booking.total, 4700);
-  assert.equal(booking.body.booking.subtotal, 4700);
+  assert.equal(booking.body.booking.total, 8000);
+  assert.equal(booking.body.booking.subtotal, 8000);
   assert.equal(booking.body.booking.booking_type, 'event');
   assert.equal(Number(booking.body.booking.duration_hours), 3);
   assert.equal(booking.body.booking.branch?.id, 'branch-batangas');
   assert.equal(booking.body.booking.needs_review, false);
   const bookingId = booking.body.booking.id;
   pass('an event booking stores its type, duration, price, and routed branch');
+
+  const pickupOnlyEvent = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: futureDate(34),
+      event_time: '10:00',
+      duration_hours: 2,
+      venue: 'Pickup-only product venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'tarpaulin', qty: 1 }],
+    }),
+  });
+  assert.equal(pickupOnlyEvent.status, 400);
+  assert.match(pickupOnlyEvent.body.error, /not available for event bookings/i);
+  pass('pickup-only products cannot be added to event bookings');
 
   const noAddress = await customer('/api/bookings', {
     method: 'POST',
@@ -587,7 +607,7 @@ try {
       items: [{ service_id: 'booth-360', qty: 1 }],
     }),
   });
-  assert.equal(laterSlot.status, 201);
+  assert.equal(laterSlot.status, 201, laterSlot.body.error);
   pass('the next time window on the same day stays bookable');
 
   const printOnly = await customer('/api/bookings', {
@@ -600,11 +620,11 @@ try {
       branch_id: 'branch-batangas',
       venue: 'Print delivery venue',
       address: 'P. Burgos Street, Batangas City, Batangas',
-      items: [{ service_id: 'tarpaulin', qty: 1 }],
+      items: [{ service_id: 'photo-tent', qty: 1 }],
     }),
   });
-  assert.equal(printOnly.status, 201);
-  pass('print-only work does not consume a booth slot');
+  assert.equal(printOnly.status, 201, printOnly.body.error);
+  pass('non-capacity event services do not consume a booth slot');
 
   const availability = await customer(
     `/api/availability?date=${capacityDate}&branch_id=branch-batangas&time=07:00&hours=2&services=photobooth-strips`
@@ -1287,7 +1307,7 @@ try {
     body: JSON.stringify({ payment_status: 'deposit_paid', payment_method: 'GCash', payment_ref: 'SMOKE-001' }),
   });
   assert.equal(paid.status, 200);
-  assert.equal(paid.body.booking.amount_paid, Math.ceil(4700 / 2));
+  assert.equal(paid.body.booking.amount_paid, Math.ceil(8000 / 2));
   pass('admin records a deposit at 50%');
 
   const actionLogs = await admin('/api/audit-logs?limit=200');

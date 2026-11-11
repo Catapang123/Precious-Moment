@@ -79,13 +79,13 @@ export const CLIENT_CATEGORY = {
  */
 const AVAILABILITY_BY_CATEGORY = {
   'Stickers and Decals': 'pickup',
-  'Souvenirs and Personalized Items': 'both',
+  'Souvenirs and Personalized Items': 'pickup',
   'Photo Printing and Frames': 'pickup',
   'Invitations and Printing': 'pickup',
   'Business Cards and IDs': 'pickup',
   'Plates and Sintra': 'pickup',
   'T-shirt and Apparel Printing': 'pickup',
-  'Tarpaulin and Signage': 'both',
+  'Tarpaulin and Signage': 'pickup',
   'Photography and Videography': 'event',
   'Albums and Other Services': 'pickup',
 };
@@ -386,7 +386,6 @@ const signage = [
     max_dimension: 50,
     round_dimensions_up: true,
     popular: true,
-    booking_availability: 'both',
     image_url: '/assets/products/tarpaulin-reference.svg',
     image_alt: 'Reference illustration of a printed tarpaulin with metal grommets',
     description:
@@ -398,7 +397,6 @@ const signage = [
     min_dimension: 1,
     max_dimension: 50,
     round_dimensions_up: true,
-    booking_availability: 'both',
     image_url: '/assets/products/blackout-reference.svg',
     image_alt: 'Reference illustration of a blackout backdrop with metal grommets',
     description:
