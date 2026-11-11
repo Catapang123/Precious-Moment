@@ -131,13 +131,12 @@ function webpSize(buffer) {
  */
 export function inspectProductImage(buffer, declaredMime = '') {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
-    throw fail('Choose a product image to upload.');
+    throw fail('Unsupported image format. Please upload JPG, PNG, or WEBP.');
   }
   if (buffer.length > MAX_IMAGE_BYTES) {
-    throw fail('The image is larger than 4 MB. Choose a smaller file.');
+    throw fail('Image exceeds the 4 MB limit.');
   }
 
-  const normalizedMime = MIME_ALIASES[String(declaredMime).toLowerCase()] || String(declaredMime).toLowerCase();
   let mime = '';
   let dimensions = null;
   const png = pngSize(buffer);
@@ -161,16 +160,23 @@ export function inspectProductImage(buffer, declaredMime = '') {
   }
 
   if (!mime || !FORMATS[mime]) {
-    throw fail('Upload a real JPG, PNG, or WEBP image. Other file types are not accepted.');
+    const looksLikeKnownImage =
+      (buffer.length >= 8 && buffer.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') ||
+      (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xd8) ||
+      (buffer.length >= 12 &&
+        buffer.toString('ascii', 0, 4) === 'RIFF' &&
+        buffer.toString('ascii', 8, 12) === 'WEBP');
+    if (looksLikeKnownImage) {
+      throw fail('This image file is damaged or cannot be opened. Please select another image.');
+    }
+    throw fail('Unsupported image format. Please upload JPG, PNG, or WEBP.');
   }
-  if (normalizedMime && normalizedMime !== mime) {
-    throw fail('The file contents do not match the image type. Choose the original image file.');
-  }
+
   if (!dimensions || !dimensions.width || !dimensions.height) {
-    throw fail('The image dimensions could not be read. Try saving and uploading it again.');
+    throw fail('This image file is damaged or cannot be opened. Please select another image.');
   }
   if (dimensions.width < MIN_IMAGE_SIDE || dimensions.height < MIN_IMAGE_SIDE) {
-    throw fail(`The image must be at least ${MIN_IMAGE_SIDE} × ${MIN_IMAGE_SIDE} pixels.`);
+    throw fail('Image dimensions must be at least 300 × 300 pixels.');
   }
   if (dimensions.width > MAX_IMAGE_SIDE || dimensions.height > MAX_IMAGE_SIDE) {
     throw fail(`The image must be no larger than ${MAX_IMAGE_SIDE} × ${MAX_IMAGE_SIDE} pixels.`);
@@ -195,9 +201,19 @@ export async function saveProductImage(buffer, image) {
       cacheControl: '31536000',
       upsert: false,
     });
-    if (error) throw new Error(`Image storage failed: ${error.message}`);
+    if (error) {
+      console.error('Product image storage failed:', error.message);
+      throw Object.assign(new Error('Unable to upload the image. Please check your connection and try again.'), {
+        status: 502,
+      });
+    }
     const { data } = client.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(filename);
-    if (!data?.publicUrl) throw new Error('Image storage did not return a public URL.');
+    if (!data?.publicUrl) {
+      console.error('Product image storage did not return a public URL.');
+      throw Object.assign(new Error('Unable to upload the image. Please check your connection and try again.'), {
+        status: 502,
+      });
+    }
     return data.publicUrl;
   }
 

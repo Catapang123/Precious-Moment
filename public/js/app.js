@@ -193,6 +193,9 @@ const state = {
   reportTo: todayISO(),
   reportLoading: false,
   reportError: '',
+  reportSection: 'summary',
+  reportDrawerCollapsed: false,
+  reportDrawerOpen: false,
   bookingType: 'event',
   typeNotice: '',
   newProductOpen: false,
@@ -227,6 +230,15 @@ const state = {
 };
 
 /* ---------- Customer design and reference uploads ---------- */
+
+const IMAGE_ERRORS = {
+  format: 'Unsupported image format. Please upload JPG, PNG, or WEBP.',
+  size: 'Image exceeds the 4 MB limit.',
+  small: 'Image dimensions must be at least 300 × 300 pixels.',
+  damaged: 'This image file is damaged or cannot be opened. Please select another image.',
+  upload: 'Unable to upload the image. Please check your connection and try again.',
+};
+const KNOWN_IMAGE_ERRORS = new Set(Object.values(IMAGE_ERRORS));
 
 const DESIGN_MAX_BYTES = 10 * 1024 * 1024;
 const DESIGN_MAX_FILES = 8;
@@ -3537,29 +3549,47 @@ function clearImageSelection(id) {
   state.imageSelections.delete(id);
 }
 
+/** Restores the card to the saved image and disables Save after a rejected file. */
+function resetImagePreview(card, id) {
+  clearImageSelection(id);
+  const service = (state.images?.services || []).find((row) => row.id === id);
+  const preview = card.querySelector('[data-image-local-preview]');
+  if (service && preview) {
+    const status = imageStatus(service);
+    preview.innerHTML = `${productImageMarkup(service)}<span class="image-status image-status--${status.key}">${status.label}</span>`;
+  }
+  const save = card.querySelector('[data-image-save]');
+  if (save) save.disabled = true;
+}
+
 function previewImageSelection(input) {
   const id = input.dataset.imageInput;
   const card = input.closest('[data-image-card]');
   const file = input.files?.[0];
   if (!id || !card || !file) return;
+
   imageMessage(card, '');
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-    imageMessage(card, 'Choose a JPG, PNG, or WEBP image.');
+  const reject = (message) => {
     input.value = '';
+    resetImagePreview(card, id);
+    imageMessage(card, message);
+  };
+
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    reject(IMAGE_ERRORS.format);
     return;
   }
   if (file.size > 4 * 1024 * 1024) {
-    imageMessage(card, 'The image is larger than 4 MB. Choose a smaller file.');
-    input.value = '';
+    reject(IMAGE_ERRORS.size);
     return;
   }
+
   const url = URL.createObjectURL(file);
   const probe = new Image();
   probe.onload = () => {
     if (probe.naturalWidth < 300 || probe.naturalHeight < 300) {
       URL.revokeObjectURL(url);
-      imageMessage(card, 'The image must be at least 300 × 300 pixels.');
-      input.value = '';
+      reject(IMAGE_ERRORS.small);
       return;
     }
     clearImageSelection(id);
@@ -3574,8 +3604,7 @@ function previewImageSelection(input) {
   };
   probe.onerror = () => {
     URL.revokeObjectURL(url);
-    imageMessage(card, 'That file could not be read as an image.');
-    input.value = '';
+    reject(IMAGE_ERRORS.damaged);
   };
   probe.src = url;
 }
@@ -3590,7 +3619,7 @@ async function saveProductImageFile(id, button) {
   const alt = card.querySelector('[data-image-alt]')?.value.trim() || '';
   imageMessage(card, '');
   button.disabled = true;
-  button.textContent = 'Saving…';
+  button.textContent = 'Uploading…';
   try {
     const { service } = await api(`/api/services/${encodeURIComponent(id)}/image?alt=${encodeURIComponent(alt)}`, {
       method: 'POST',
@@ -3602,11 +3631,19 @@ async function saveProductImageFile(id, button) {
     toast(`${service.name} image saved. The customer catalog is updated.`);
     await loadProductImages();
   } catch (error) {
-    imageMessage(card, error.message);
+    console.error('Product image upload failed:', error);
+    const message =
+      error?.status === 413
+        ? IMAGE_ERRORS.size
+        : KNOWN_IMAGE_ERRORS.has(error?.message)
+          ? error.message
+          : IMAGE_ERRORS.upload;
+    imageMessage(card, message);
     button.disabled = false;
     button.textContent = 'Save image';
   }
 }
+
 
 async function removeProductImageFile(id, button) {
   const card = document.querySelector(`[data-image-card="${id}"]`);
@@ -4065,141 +4102,206 @@ async function saveNewService(form) {
   }
 }
 
+const REPORT_SECTIONS = [
+  { key: 'summary', label: 'Summary', note: 'Headline numbers', icon: 'reports' },
+  { key: 'services', label: 'Services', note: 'Units and value', icon: 'bookings' },
+  { key: 'payments', label: 'Payment mix', note: 'Amounts recorded', icon: 'payments' },
+  { key: 'status', label: 'Status mix', note: 'Booking statuses', icon: 'check' },
+  { key: 'workload', label: 'Crew workload', note: 'Active and done', icon: 'staff' },
+  { key: 'bookings', label: 'Bookings', note: 'Created in period', icon: 'calendar' },
+  { key: 'cancellations', label: 'Cancellations', note: 'Reasons and filters', icon: 'spark' },
+];
+
+function reportControlsTemplate(report) {
+  return `
+    <form class="report-controls" id="report-form" novalidate>
+      <div class="field">
+        <label for="report-from">From</label>
+        <input class="input" type="date" id="report-from" value="${esc(state.reportFrom)}" required />
+      </div>
+      <div class="field">
+        <label for="report-to">To</label>
+        <input class="input" type="date" id="report-to" value="${esc(state.reportTo)}" required />
+      </div>
+      <button class="btn btn-primary" type="submit" ${state.reportLoading ? 'disabled' : ''}>${state.reportLoading ? 'Generating…' : 'Generate report'}</button>
+      <span class="report-meta">${report ? `Last generated ${formatDateTime(report.period.generated_at)}` : 'Generated on demand from live records'}</span>
+      <div class="form-error ${state.reportError ? 'show' : ''}" role="alert" style="flex-basis:100%">
+        ${esc(state.reportError)}
+        ${state.reportError ? '<button class="btn btn-sm" type="button" data-report-retry>Try again</button>' : ''}
+      </div>
+    </form>`;
+}
+
+function reportSectionHtml(key, report, statusMax, methodMax) {
+  if (!report) return '';
+
+  if (key === 'summary') {
+    return `
+      <div class="report-summary">
+        <div class="report-stat"><span>Bookings created</span><strong>${report.summary.bookings}</strong></div>
+        <div class="report-stat"><span>Completed</span><strong>${report.summary.completed}</strong></div>
+        <div class="report-stat"><span>Payments recorded</span><strong>${peso(report.summary.revenue_collected)}</strong></div>
+        <div class="report-stat"><span>Outstanding balance</span><strong>${peso(report.summary.outstanding)}</strong></div>
+      </div>`;
+  }
+
+  if (key === 'services') {
+    return `
+      <div class="panel">
+        <div class="panel-head"><div><h3>Services in this period</h3><p>Value of bookings created between ${formatDate(report.period.from, 'short')} and ${formatDate(report.period.to, 'short')}</p></div></div>
+        <div class="panel-body">
+          ${
+            report.by_service.length
+              ? `<table class="report-table">
+                  <thead><tr><th>Service</th><th>Units</th><th>Value</th></tr></thead>
+                  <tbody>${report.by_service
+                    .map(
+                      (service) => `<tr><td>${esc(service.name)}</td><td>${service.units}</td><td class="money">${peso(service.revenue)}</td></tr>`
+                    )
+                    .join('')}</tbody>
+                </table>`
+              : '<p class="tiny muted">No bookings were created in this period.</p>'
+          }
+        </div>
+      </div>`;
+  }
+
+  if (key === 'payments') {
+    return `
+      <div class="panel">
+        <div class="panel-head"><div><h3>Payment mix</h3><p>Amounts recorded in this period</p></div></div>
+        <div class="panel-body">
+          ${
+            report.by_method.length
+              ? `<div class="bar-list">${report.by_method
+                  .map(
+                    (method) => `
+                  <div class="bar-item">
+                    <span>${esc(method.method)}</span>
+                    <div class="bar-track"><i style="width:${Math.round((method.amount / methodMax) * 100)}%"></i></div>
+                    <strong>${peso(method.amount)}</strong>
+                  </div>`
+                  )
+                  .join('')}</div>`
+              : '<p class="tiny muted">No payments were recorded in this period.</p>'
+          }
+        </div>
+      </div>`;
+  }
+
+  if (key === 'status') {
+    return `
+      <div class="panel">
+        <div class="panel-head"><div><h3>Status mix</h3><p>Studio-wide booking statuses</p></div></div>
+        <div class="panel-body">
+          ${reportBars(report.by_status, 'count', 'status', statusMax)}
+        </div>
+      </div>`;
+  }
+
+  if (key === 'workload') {
+    return `
+      <div class="panel">
+        <div class="panel-head"><div><h3>Crew workload</h3><p>Active and completed assignments</p></div></div>
+        <div class="panel-body">
+          ${
+            report.staff.length
+              ? `<div class="workload-list">${report.staff
+                  .map(
+                    (member) => `
+                  <div class="workload-row">
+                    <span class="workload-avatar">${esc(initials(member.name))}</span>
+                    <strong>${esc(member.name)}</strong>
+                    <span>${member.active} active · ${member.completed} done</span>
+                  </div>`
+                  )
+                  .join('')}</div>`
+              : '<p class="tiny muted">No staff accounts yet.</p>'
+          }
+        </div>
+      </div>`;
+  }
+
+  if (key === 'bookings') {
+    return `
+      <div class="panel">
+        <div class="panel-head"><div><h3>Bookings created in this period</h3><p>${plural(report.created_bookings.length, 'record')} · export the full detail as CSV</p></div></div>
+        ${
+          report.created_bookings.length
+            ? `<div class="table-wrap"><table class="data-table">
+                <thead><tr><th>Reference</th><th>Event date</th><th>Customer</th><th>Status</th><th>Payment</th><th>Total</th></tr></thead>
+                <tbody>${report.created_bookings
+                  .map(
+                    (booking) => `<tr><td><span class="cell-main">${esc(booking.ref)}</span></td><td>${formatDate(booking.event_date, 'short')}</td><td>${esc(booking.customer)}</td><td>${statusBadge(booking.status)}</td><td>${statusBadge(booking.payment_status)}</td><td><span class="cell-money">${peso(booking.total)}</span></td></tr>`
+                  )
+                  .join('')}</tbody>
+              </table></div>`
+            : '<div class="table-empty">No bookings created in this period.</div>'
+        }
+      </div>`;
+  }
+
+  return '';
+}
+
 function renderReports() {
   const csvHref = `/api/reports.csv?from=${encodeURIComponent(state.reportFrom)}&to=${encodeURIComponent(state.reportTo)}`;
   const report = state.report;
   const statusMax = report ? Math.max(1, ...report.by_status.map((item) => item.count)) : 1;
   const methodMax = report ? Math.max(1, ...report.by_method.map((item) => item.amount)) : 1;
+  const active = REPORT_SECTIONS.some((section) => section.key === state.reportSection)
+    ? state.reportSection
+    : 'summary';
+  const collapsed = state.reportDrawerCollapsed;
 
   viewRoot.innerHTML = `
     <div class="page-intro">
       <div><h2>Operational reports</h2><p>Generated from the live booking and payment records. Pick a period, then export it for your files.</p></div>
       <div class="page-actions">
+        <button class="btn report-menu-toggle" type="button" data-report-menu>${ICONS.bookings} Report sections</button>
         <a class="btn" href="${esc(csvHref)}" download>${ICONS.download} Download CSV</a>
       </div>
     </div>
-    <div class="panel">
-      <form class="report-controls" id="report-form" novalidate>
-        <div class="field">
-          <label for="report-from">From</label>
-          <input class="input" type="date" id="report-from" value="${esc(state.reportFrom)}" required />
+    <div class="report-layout ${collapsed ? 'is-collapsed' : ''} ${state.reportDrawerOpen ? 'drawer-open' : ''}" data-report-layout>
+      <aside class="report-drawer" id="report-drawer" aria-label="Report sections">
+        <div class="report-drawer-head">
+          <div><h3>Report sections</h3><p>Choose what to view</p></div>
+          <button class="icon-button report-drawer-collapse" type="button" data-report-collapse aria-label="${collapsed ? 'Expand report menu' : 'Collapse report menu'}" title="${collapsed ? 'Expand report menu' : 'Collapse report menu'}">${ICONS.chevron}</button>
+          <button class="icon-button report-drawer-close" type="button" data-report-drawer-close aria-label="Close report menu">${ICONS.close}</button>
         </div>
-        <div class="field">
-          <label for="report-to">To</label>
-          <input class="input" type="date" id="report-to" value="${esc(state.reportTo)}" required />
+        <nav class="report-drawer-nav">
+          ${REPORT_SECTIONS.map(
+            (section) => `
+            <button class="report-drawer-item ${active === section.key ? 'active' : ''}" type="button" data-report-section="${section.key}" ${active === section.key ? 'aria-current="true"' : ''} title="${esc(section.label)}">
+              <span class="report-drawer-icon">${ICONS[section.icon] || ICONS.reports}</span>
+              <span class="report-drawer-copy"><strong>${esc(section.label)}</strong><small>${esc(section.note)}</small></span>
+            </button>`
+          ).join('')}
+        </nav>
+      </aside>
+      <div class="report-drawer-backdrop" data-report-drawer-close></div>
+      <section class="report-content" aria-label="Report content">
+        <div class="panel">
+          ${reportControlsTemplate(report)}
+          ${
+            state.reportLoading && !report
+              ? reportSkeleton()
+              : report && active !== 'cancellations'
+                ? `<div class="report-generated">${reportSectionHtml(active, report, statusMax, methodMax)}</div>`
+                : !report && active !== 'cancellations'
+                  ? `<div class="empty-state">
+                      <div class="empty-state-icon">${ICONS.reports}</div>
+                      <h3>Choose a period</h3>
+                      <p>Generate a report to see bookings, payments, and crew workload for the dates you choose.</p>
+                    </div>`
+                  : ''
+          }
         </div>
-        <button class="btn btn-primary" type="submit" ${state.reportLoading ? 'disabled' : ''}>${state.reportLoading ? 'Generating…' : 'Generate report'}</button>
-        <span class="report-meta">${report ? `Last generated ${formatDateTime(report.period.generated_at)}` : 'Generated on demand from live records'}</span>
-        <div class="form-error ${state.reportError ? 'show' : ''}" role="alert" style="flex-basis:100%">
-          ${esc(state.reportError)}
-          ${state.reportError ? '<button class="btn btn-sm" type="button" data-report-retry>Try again</button>' : ''}
-        </div>
-      </form>
-      ${
-        state.reportLoading && !report
-          ? reportSkeleton()
-          : report
-            ? `
-            <div class="report-generated">
-              <div class="report-summary">
-                <div class="report-stat"><span>Bookings created</span><strong>${report.summary.bookings}</strong></div>
-                <div class="report-stat"><span>Completed</span><strong>${report.summary.completed}</strong></div>
-                <div class="report-stat"><span>Payments recorded</span><strong>${peso(report.summary.revenue_collected)}</strong></div>
-                <div class="report-stat"><span>Outstanding balance</span><strong>${peso(report.summary.outstanding)}</strong></div>
-              </div>
-
-              <div class="report-grid">
-                <div class="panel">
-                  <div class="panel-head"><div><h3>Services in this period</h3><p>Value of bookings created between ${formatDate(report.period.from, 'short')} and ${formatDate(report.period.to, 'short')}</p></div></div>
-                  <div class="panel-body">
-                    ${
-                      report.by_service.length
-                        ? `<table class="report-table">
-                            <thead><tr><th>Service</th><th>Units</th><th>Value</th></tr></thead>
-                            <tbody>${report.by_service
-                              .map(
-                                (service) => `<tr><td>${esc(service.name)}</td><td>${service.units}</td><td class="money">${peso(service.revenue)}</td></tr>`
-                              )
-                              .join('')}</tbody>
-                          </table>`
-                        : '<p class="tiny muted">No bookings were created in this period.</p>'
-                    }
-                  </div>
-                </div>
-
-                <div class="panel">
-                  <div class="panel-head"><div><h3>Payment mix</h3><p>Amounts recorded in this period</p></div></div>
-                  <div class="panel-body">
-                    ${
-                      report.by_method.length
-                        ? `<div class="bar-list">${report.by_method
-                            .map(
-                              (method) => `
-                            <div class="bar-item">
-                              <span>${esc(method.method)}</span>
-                              <div class="bar-track"><i style="width:${Math.round((method.amount / methodMax) * 100)}%"></i></div>
-                              <strong>${peso(method.amount)}</strong>
-                            </div>`
-                            )
-                            .join('')}</div>`
-                        : '<p class="tiny muted">No payments were recorded in this period.</p>'
-                    }
-                  </div>
-                </div>
-
-                <div class="panel">
-                  <div class="panel-head"><div><h3>Status mix</h3><p>Studio-wide booking statuses</p></div></div>
-                  <div class="panel-body">
-                    ${reportBars(report.by_status, 'count', 'status', statusMax)}
-                  </div>
-                </div>
-
-                <div class="panel">
-                  <div class="panel-head"><div><h3>Crew workload</h3><p>Active and completed assignments</p></div></div>
-                  <div class="panel-body">
-                    ${
-                      report.staff.length
-                        ? `<div class="workload-list">${report.staff
-                            .map(
-                              (member) => `
-                            <div class="workload-row">
-                              <span class="workload-avatar">${esc(initials(member.name))}</span>
-                              <strong>${esc(member.name)}</strong>
-                              <span>${member.active} active · ${member.completed} done</span>
-                            </div>`
-                            )
-                            .join('')}</div>`
-                        : '<p class="tiny muted">No staff accounts yet.</p>'
-                    }
-                  </div>
-                </div>
-              </div>
-
-              <div class="panel" style="margin-top:20px">
-                <div class="panel-head"><div><h3>Bookings created in this period</h3><p>${plural(report.created_bookings.length, 'record')} · export the full detail as CSV</p></div></div>
-                ${
-                  report.created_bookings.length
-                    ? `<div class="table-wrap"><table class="data-table">
-                        <thead><tr><th>Reference</th><th>Event date</th><th>Customer</th><th>Status</th><th>Payment</th><th>Total</th></tr></thead>
-                        <tbody>${report.created_bookings
-                          .map(
-                            (booking) => `<tr><td><span class="cell-main">${esc(booking.ref)}</span></td><td>${formatDate(booking.event_date, 'short')}</td><td>${esc(booking.customer)}</td><td>${statusBadge(booking.status)}</td><td>${statusBadge(booking.payment_status)}</td><td><span class="cell-money">${peso(booking.total)}</span></td></tr>`
-                          )
-                          .join('')}</tbody>
-                      </table></div>`
-                    : '<div class="table-empty">No bookings created in this period.</div>'
-                }
-              </div>
-            </div>`
-            : `<div class="empty-state">
-                <div class="empty-state-icon">${ICONS.reports}</div>
-                <h3>Choose a period</h3>
-                <p>Generate a report to see bookings, payments, and crew workload for the dates you choose.</p>
-              </div>`
-      }
-    </div>
-    ${cancellationsPanelTemplate()}`;
+        ${active === 'cancellations' ? cancellationsPanelTemplate() : ''}
+      </section>
+    </div>`;
 }
+
 
 /* ---------- Cancellation reporting ---------- */
 
@@ -5639,6 +5741,32 @@ document.addEventListener('click', async (event) => {
   if (target.closest('[data-use-suggestion]')) {
     state.adminSearch = target.closest('[data-use-suggestion]').dataset.useSuggestion || '';
     renderView();
+    return;
+  }
+  const reportSectionButton = target.closest('[data-report-section]');
+  if (reportSectionButton) {
+    const fromInput = document.getElementById('report-from');
+    const toInput = document.getElementById('report-to');
+    if (fromInput?.value) state.reportFrom = fromInput.value;
+    if (toInput?.value) state.reportTo = toInput.value;
+    state.reportSection = reportSectionButton.dataset.reportSection || 'summary';
+    state.reportDrawerOpen = false;
+    renderView();
+    return;
+  }
+  if (target.closest('[data-report-collapse]')) {
+    state.reportDrawerCollapsed = !state.reportDrawerCollapsed;
+    renderView();
+    return;
+  }
+  if (target.closest('[data-report-menu]')) {
+    state.reportDrawerOpen = true;
+    document.querySelector('[data-report-layout]')?.classList.add('drawer-open');
+    return;
+  }
+  if (target.closest('[data-report-drawer-close]')) {
+    state.reportDrawerOpen = false;
+    document.querySelector('[data-report-layout]')?.classList.remove('drawer-open');
     return;
   }
   if (target.closest('[data-report-retry]')) {

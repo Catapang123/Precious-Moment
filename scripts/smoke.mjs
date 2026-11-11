@@ -862,7 +862,7 @@ try {
     body: Buffer.from('not an image'),
   });
   assert.equal(invalidImageUpload.status, 400);
-  assert.match(invalidImageUpload.body.error, /real JPG, PNG, or WEBP/);
+  assert.equal(invalidImageUpload.body.error, 'Unsupported image format. Please upload JPG, PNG, or WEBP.');
 
   const uploadedImage = await branch1('/api/services/tarpaulin-custom/image?alt=Smoke-tested%20tarpaulin', {
     method: 'POST',

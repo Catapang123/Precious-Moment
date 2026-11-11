@@ -9152,3 +9152,243 @@ details[open] > .price-edit-body,
 .cancel-review .drawer-note {
   margin: 14px 0;
 }
+/* ---------- Reports drawer navigation ---------- */
+
+.report-layout {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.report-drawer {
+  position: sticky;
+  top: 94px;
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  padding: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.report-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 4px 8px;
+}
+
+.report-drawer-head > div {
+  min-width: 0;
+}
+
+.report-drawer-head h3 {
+  font-family: var(--serif);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.report-drawer-head p {
+  margin-top: 2px;
+  font-size: 0.58rem;
+  color: var(--ink-faint);
+}
+
+.report-drawer-collapse {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.report-drawer-collapse svg {
+  width: 15px;
+  height: 15px;
+}
+
+.report-drawer-close {
+  display: none;
+  flex-shrink: 0;
+}
+
+.report-drawer-close svg {
+  width: 15px;
+  height: 15px;
+}
+
+.report-drawer-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.report-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+
+.report-drawer-item:hover {
+  background: var(--blush-2);
+}
+
+.report-drawer-item.active {
+  background: var(--blush);
+  border-color: rgba(199, 43, 92, 0.18);
+  color: var(--ink);
+}
+
+.report-drawer-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  color: var(--rose-deep);
+}
+
+.report-drawer-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.report-drawer-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.report-drawer-copy strong {
+  font-size: 0.7rem;
+  line-height: 1.25;
+}
+
+.report-drawer-copy small {
+  margin-top: 1px;
+  font-size: 0.56rem;
+  color: var(--ink-faint);
+  line-height: 1.3;
+}
+
+.report-content {
+  min-width: 0;
+}
+
+.report-menu-toggle {
+  display: none;
+}
+
+.report-layout.is-collapsed {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
+.report-layout.is-collapsed .report-drawer {
+  padding: 10px 8px;
+}
+
+.report-layout.is-collapsed .report-drawer-copy,
+.report-layout.is-collapsed .report-drawer-head > div {
+  display: none;
+}
+
+.report-layout.is-collapsed .report-drawer-head {
+  justify-content: center;
+}
+
+.report-layout.is-collapsed .report-drawer-collapse {
+  margin: 0;
+  transform: rotate(180deg);
+}
+
+.report-layout.is-collapsed .report-drawer-item {
+  justify-content: center;
+  padding: 10px 6px;
+}
+
+@media (min-width: 921px) {
+  .report-content {
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+}
+
+@media (max-width: 920px) {
+  .report-layout,
+  .report-layout.is-collapsed {
+    display: block;
+  }
+
+  .report-drawer {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 140;
+    width: min(320px, 86vw);
+    max-height: none;
+    border-radius: 0 16px 16px 0;
+    transform: translateX(-105%);
+    transition: transform 0.22s ease;
+  }
+
+  .report-layout.drawer-open .report-drawer {
+    transform: none;
+  }
+
+  .report-layout.is-collapsed .report-drawer-copy,
+  .report-layout.is-collapsed .report-drawer-head > div {
+    display: block;
+  }
+
+  .report-layout.is-collapsed .report-drawer-head {
+    justify-content: flex-start;
+  }
+
+  .report-layout.is-collapsed .report-drawer-item {
+    justify-content: flex-start;
+    padding: 9px 10px;
+  }
+
+  .report-drawer-collapse {
+    display: none;
+  }
+
+  .report-drawer-close {
+    display: inline-flex;
+  }
+
+  .report-drawer-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 130;
+    background: rgba(42, 20, 32, 0.5);
+    backdrop-filter: blur(3px);
+  }
+
+  .report-layout.drawer-open .report-drawer-backdrop {
+    display: block;
+  }
+
+  .report-menu-toggle {
+    display: inline-flex;
+  }
+
+  .report-content {
+    max-height: none;
+    overflow: visible;
+  }
+}

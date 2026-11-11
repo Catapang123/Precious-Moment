@@ -556,7 +556,7 @@ export function createApp(store) {
       'Content-Security-Policy',
       [
         "default-src 'self'",
-        "img-src 'self' data: https://images.unsplash.com https://*.supabase.co",
+        "img-src 'self' data: blob: https://images.unsplash.com https://*.supabase.co",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src https://fonts.gstatic.com",
         "script-src 'self'",
@@ -1502,7 +1502,7 @@ export function createApp(store) {
       const service = await store.get('services', req.params.id);
       if (!service) throw fail(404, 'That product was not found.');
       if (!Buffer.isBuffer(req.body) || !req.body.length) {
-        throw fail(415, 'Upload a JPG, PNG, or WEBP image file.');
+        throw fail(415, 'Unsupported image format. Please upload JPG, PNG, or WEBP.');
       }
       const image = inspectProductImage(req.body, req.get('content-type') || '');
       const alt = String(req.query.alt || service.image_alt || `${service.name} product image`).trim().slice(0, 180);
@@ -3111,6 +3111,9 @@ export function createApp(store) {
 
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
+    if (error?.type === 'entity.too.large' && req.path.endsWith('/image')) {
+      return json(res, 413, { error: 'Image exceeds the 4 MB limit.' });
+    }
     const status = Number(error.status) || 500;
     if (status >= 500) console.error(error);
     json(res, status, {
