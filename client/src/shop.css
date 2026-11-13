@@ -2847,9 +2847,9 @@ body {
 
 .shop-shell {
   background:
-    radial-gradient(circle at 72% -8%, rgba(255, 55, 138, 0.3), transparent 34rem),
-    radial-gradient(circle at 2% 12%, rgba(124, 25, 70, 0.16), transparent 28rem),
-    linear-gradient(165deg, #2b0819 0%, #14060e 42%, #080508 72%, #050305 100%);
+    radial-gradient(circle at 72% -8%, rgba(255, 55, 138, 0.44), transparent 34rem),
+    radial-gradient(circle at 2% 12%, rgba(124, 25, 70, 0.24), transparent 28rem),
+    linear-gradient(165deg, #701643 0%, #420c27 24%, #1b0611 52%, #090408 78%, #050305 100%);
   background-attachment: fixed;
 }
 

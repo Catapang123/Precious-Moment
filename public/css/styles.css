@@ -10074,18 +10074,18 @@ details[open] > .price-edit-body,
 
 body {
   background:
-    radial-gradient(1100px 720px at 74% -12%, rgba(255, 55, 138, 0.28), transparent 62%),
-    radial-gradient(900px 640px at -8% 30%, rgba(124, 25, 70, 0.18), transparent 68%),
-    linear-gradient(165deg, #2b0819 0%, #14060e 38%, #080508 70%, #050305 100%);
+    radial-gradient(1100px 760px at 74% -12%, rgba(255, 55, 138, 0.42), transparent 62%),
+    radial-gradient(900px 640px at -8% 30%, rgba(124, 25, 70, 0.26), transparent 68%),
+    linear-gradient(165deg, #7d1d4d 0%, #4b0e2c 22%, #210713 50%, #0a0408 74%, #050305 100%);
   background-attachment: fixed;
 }
 
 .app-body,
 .auth-body {
   background:
-    radial-gradient(1100px 720px at 74% -12%, rgba(255, 55, 138, 0.28), transparent 62%),
-    radial-gradient(900px 640px at -8% 30%, rgba(124, 25, 70, 0.18), transparent 68%),
-    linear-gradient(165deg, #2b0819 0%, #14060e 38%, #080508 70%, #050305 100%);
+    radial-gradient(1100px 760px at 74% -12%, rgba(255, 55, 138, 0.42), transparent 62%),
+    radial-gradient(900px 640px at -8% 30%, rgba(124, 25, 70, 0.26), transparent 68%),
+    linear-gradient(165deg, #7d1d4d 0%, #4b0e2c 22%, #210713 50%, #0a0408 74%, #050305 100%);
   background-attachment: fixed;
 }
 
