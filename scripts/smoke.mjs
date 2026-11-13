@@ -184,8 +184,17 @@ try {
 
   const root = await publicSession('/');
   assert.equal(root.status, 302);
-  assert.match(root.headers.get('location') || '', /\/login\?mode=register/);
-  pass('the system opens on sign-up');
+  assert.equal(root.headers.get('location'), '/shop');
+  const shop = await publicSession('/shop/');
+  assert.equal(shop.status, 200);
+  assert.match(shop.body, /Precious Moments/);
+  assert.match(shop.body, /\/shop\/assets\//);
+  const shopAsset = shop.body.match(/\/shop\/assets\/[^"']+\.js/);
+  assert.ok(shopAsset, 'the storefront references its compiled JavaScript bundle');
+  const shopAssetResponse = await publicSession(shopAsset[0]);
+  assert.equal(shopAssetResponse.status, 200);
+  assert.match(shopAssetResponse.headers.get('content-type') || '', /javascript/);
+  pass('the public catalog opens without a session and serves its compiled assets');
 
   const welcome = await publicSession('/welcome');
   assert.equal(welcome.status, 200);

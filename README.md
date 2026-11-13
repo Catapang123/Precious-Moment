@@ -4,9 +4,11 @@ A booking and operations platform for a print, photo, and photobooth studio. Cus
 request dates and follow their bookings, the owner and two branch heads run the calendar
 and the counter, and crew are assignment records rather than login accounts.
 
-Built with plain **HTML, CSS, and JavaScript** on the front end, **Node.js / Express**
-for the web API, **Python** for scheduled reporting, and **Supabase** (Postgres and
-Storage) for production data and product images.
+The public catalog is a **React 18 + Vite** storefront mounted at `/shop`. The existing
+operations dashboard remains the original **HTML, CSS, and JavaScript** app at `/app`,
+so every existing workflow is preserved. The API is **Node.js / Express**, scheduled
+reporting is **Python**, and production data and product images live in **Supabase**
+(Postgres and Storage).
 
 ---
 
@@ -14,7 +16,10 @@ Storage) for production data and product images.
 
 **Customer**
 
-- Create an account at the sign-up screen the system opens on
+- Browse the public catalog at `/shop` without an account, with search, category
+  filters, product previews, and a cart saved on the device
+- Add products and booths as a guest; create an account or sign in only when ready to
+  confirm the booking, with the cart preserved across that handoff
 - Build a booking from the live price catalog: tarpaulin, signboards, shirts, mugs,
   stickers, IDs, souvenirs, invitations, photo/video coverage, and every booth
 - Choose **Event** or **Pickup** and see only the fields that belong to that type
@@ -210,7 +215,8 @@ There is no external model call, so it cannot invent a price, a policy, or an an
 
 | URL | What it does |
 | --- | --- |
-| `/` | Signed out: redirects to the sign-up screen. Signed in: redirects to `/app` |
+| `/` | Signed out: redirects to the public `/shop` catalog. Signed in: `/app` |
+| `/shop` | React public catalog, cart, account gate, and booking request |
 | `/login` | Sign-up is the default tab; `?mode=login` opens sign-in |
 | `/welcome` | The public marketing page and rate card |
 | `/app` | Customer, branch head, and owner dashboard (sign-in required) |
@@ -265,10 +271,16 @@ npm ci
    npm start
    ```
 
-Open <http://localhost:3000>. That lands on the sign-up screen. The rate card and
-marketing page are at `/welcome`. The product catalog is seeded on first start and any
-newly released products are added on later starts; no sample bookings or customer
-accounts are created.
+Build the storefront once (or after changing files under `client/`):
+
+```bash
+npm run build:shop
+```
+
+Then open <http://localhost:3000>. That lands on the public catalog at `/shop`. The
+rate card and marketing page are at `/welcome`; sign-up and sign-in are at `/login`.
+The product catalog is seeded on first start and newly released products are added on
+later starts; no sample bookings or customer accounts are created.
 
 ### Environment variables
 
@@ -395,8 +407,9 @@ Without `RESEND_API_KEY`, the reset form still returns its generic success messa
 (so it cannot be used to discover accounts) but no email is delivered. Set the key
 and a verified sender before relying on self-service recovery in production.
 
-Any Node host works (Render, Railway, Fly.io, or a VPS) with `npm ci` as the build and
-`npm start` as the start command. Use Supabase for storage so records survive restarts.
+Any Node host works (Render, Railway, Fly.io, or a VPS). The build command is
+`npm ci && npm run build:shop`; the start command is `npm start`. Use Supabase for
+storage so records survive restarts. `render.yaml` already uses that build command.
 
 The [CI workflow](.github/workflows/ci.yml) runs the smoke test and compiles the Python
 reporter on every push and pull request.
@@ -421,6 +434,8 @@ server/security.js        scrypt, password policy, sessions, TOTP, secret encryp
 server/images.js          Product-image validation and Supabase Storage (local fallback)
 server/mail.js            Password-reset email (Resend or dev console)
 server/reports.js         Node report builder
+client/                   React storefront source (catalog, cart, auth gate, checkout)
+public/shop/              Vite production build served at /shop
 supabase/schema.sql       Postgres tables, constraints, indexes, RLS
 supabase/migrate-branches.sql  Two-branch migration for an existing project
 supabase/migrate-features.sql  Booking types, discounts, accounts, MFA migration

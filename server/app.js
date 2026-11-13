@@ -76,6 +76,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const SHOP_DIR = path.join(PUBLIC_DIR, 'shop');
 
 const PAYMENT_STATUSES = ['unpaid', 'deposit_paid', 'paid', 'refunded'];
 const STAFF_STATUSES = ['in_progress', 'ready', 'completed'];
@@ -3079,6 +3080,18 @@ export function createApp(store) {
       setHeaders(res) { res.setHeader('X-Content-Type-Options', 'nosniff'); },
     })
   );
+  // The React storefront is a Vite build mounted before the legacy static
+  // root, so /shop and /shop/assets/* never fall through to the old pages.
+  app.use(
+    '/shop',
+    express.static(SHOP_DIR, {
+      index: 'index.html',
+      maxAge: IS_PROD ? '30d' : 0,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+      },
+    })
+  );
   app.use(
     express.static(PUBLIC_DIR, {
       index: false,
@@ -3089,12 +3102,13 @@ export function createApp(store) {
       },
     })
   );
-  // The system opens on sign-up; the marketing page stays at /welcome.
+  // Visitors start in the public catalog. Signed-in customers and staff keep
+  // their existing dashboard entry point at /app.
   /* ---------- Page routes and the 404 fallback ---------- */
 
   app.get('/', (req, res) => {
     if (req.user) return res.redirect('/app');
-    res.redirect('/login?mode=register');
+    res.redirect('/shop');
   });
   app.get('/welcome', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
   app.get('/login', (req, res) => {

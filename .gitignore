@@ -11,6 +11,7 @@ __pycache__/
 
 # Local preview server data and screenshots
 .tmp-live/
+.tmp-shop-preview/
 
 # Administrator-uploaded product photos live on disk, not in version control.
 public/uploads/

@@ -3,7 +3,7 @@ services:
     name: precious-moments
     runtime: node
     plan: free
-    buildCommand: npm ci
+    buildCommand: npm ci && npm run build:shop
     startCommand: npm start
     healthCheckPath: /api/ready
     envVars:
