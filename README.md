@@ -241,7 +241,7 @@ full image; Escape or the close button returns to the catalog. The previous stan
 tarp sizes remain intact in the database for existing orders but are hidden from the
 new-booking catalog by the measured Tarpaulin product.
 
-**Product images.** Main Admin and Branch Admin share one Product images screen. Either
+**Product media.** Main Admin and Branch Admin share one Product media screen. Either
 role can upload, preview, replace, or remove a product image for any product. Files are
 validated as JPG, PNG, or WEBP by magic bytes and dimensions (minimum 300 × 300, maximum
 4 MB), saved under a unique name to Supabase Storage in production (local disk in
@@ -249,8 +249,19 @@ development), and audited with the actor and timestamp. The old
 image stays live until the replacement database write succeeds. Removing an image hides
 that product from the customer catalog. New products start hidden until an image is
 uploaded. Existing catalog rows predate the image requirement and remain visible during
-the photo migration; they are flagged **Image needed** on the Pricing and Product images
+the photo migration; they are flagged **Image needed** on the Pricing and Product media
 screens and should be photographed before launch.
+
+Each product can also carry one optional preview video. From the same **Product media**
+screen, an owner or branch head can upload or replace an MP4 or WEBM up to 25 MB. The
+server checks the container from its magic bytes, stores it under `videos/` with a
+random filename in the same public media bucket (local disk in development), and keeps
+the old video live until the database write succeeds. Customers see a play badge on the
+shop card and can play the video in the product details; products without one keep the
+photo layout. Video changes are audited, and removing a video does not hide the product.
+Existing Supabase projects must run
+[supabase/migrate-service-video.sql](supabase/migrate-service-video.sql) once before the
+first upload; it only adds the five optional video columns.
 
 The owner edits retail prices from **Pricing** in the dashboard; the changes apply to
 the marketing rate card, booking form, checkout, assistant, and all new bookings. The
@@ -361,7 +372,8 @@ npm ci
    [supabase/migrate-catalog-images-auth.sql](supabase/migrate-catalog-images-auth.sql),
    [supabase/migrate-inventory.sql](supabase/migrate-inventory.sql), and
    [supabase/migrate-logistics.sql](supabase/migrate-logistics.sql), and
-   [supabase/migrate-assistant-history.sql](supabase/migrate-assistant-history.sql).
+   [supabase/migrate-assistant-history.sql](supabase/migrate-assistant-history.sql), and
+   [supabase/migrate-service-video.sql](supabase/migrate-service-video.sql).
    Every migration is additive and safe to re-run.
 3. Create `.env` from [.env.example](.env.example) and fill in:
 
@@ -590,8 +602,9 @@ render.yaml               Render deployment blueprint
 ### API
 
 All mutating requests must come from the same origin and carry the session cookie when
-they act on a signed-in record. JSON is used except for product-image uploads, which
-send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` content type.
+they act on a signed-in record. JSON is used except for product-media uploads, which
+send raw bytes with an `image/jpeg`, `image/png`, `image/webp`, `video/mp4`, or
+`video/webm` content type.
 
 | Method | Path                          | Access            | Purpose                                  |
 | ------ | ----------------------------- | ----------------- | ---------------------------------------- |
@@ -610,10 +623,12 @@ send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` cont
 | GET    | `/api/services`               | public            | Catalog and categories                   |
 | GET    | `/api/pricing`                | admin             | Retail services, client rates, review flags |
 | PATCH  | `/api/services/:id`           | admin             | Update a price, measurement rule, or confirmation flag |
-| GET    | `/api/product-images`         | admin, branch admin | Shared catalog image console and recent changes |
+| GET    | `/api/product-images`         | admin, branch admin | Shared catalog media console and recent changes |
 | POST   | `/api/services/:id/image`     | admin, branch admin | Upload or replace a validated product image |
 | DELETE | `/api/services/:id/image`     | admin, branch admin | Remove an image and hide the product |
-| GET    | `/api/audit-logs`             | admin             | Recent auth, booking, payment, account, MFA, and image audit entries |
+| POST   | `/api/services/:id/video`     | admin, branch admin | Upload or replace a 25 MB MP4/WEBM preview video |
+| DELETE | `/api/services/:id/video`     | admin, branch admin | Remove a preview video without hiding the product |
+| GET    | `/api/audit-logs`             | admin             | Recent auth, booking, payment, account, MFA, and media audit entries |
 | GET    | `/api/bookings`               | session           | Role-scoped booking list                 |
 | POST   | `/api/bookings`               | customer, admin   | Create an event or pickup booking        |
 | GET    | `/api/bookings/:id`           | session, scoped   | One booking with items and timeline      |
@@ -680,10 +695,10 @@ production data untouched.
 
 - Notifications are in-app only (the **Alerts** page). Password-reset email is the only
   transactional email; SMS and push delivery are not configured.
-- Product images use Supabase Storage when `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+- Product media uses Supabase Storage when `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
   and `SUPABASE_STORAGE_BUCKET` are configured; the storage bucket must be public for
-  the catalog to display images. Without those values, images fall back to the local
-  `UPLOAD_DIR`, which does not survive an ephemeral deploy. The database stores paths
+  the catalog to display media. Without those values, images and videos fall back to the
+  local `UPLOAD_DIR`, which does not survive an ephemeral deploy. The database stores paths
   and metadata, not image bytes.
 - Two-factor is available on every account and recommended for the owner and branch
   heads, but it is not forced. The owner can reset it from Team or from a customer's

@@ -67,7 +67,7 @@ role and branch rules.
 | `assistant.js` | Deterministic in-app Q&A over catalog, branches, policies, own bookings, scoped inventory, deployments, and schedules. | `answerQuestion`, `OUT_OF_SCOPE` | `/api/assistant` |
 | `ai.js` | Hosted-model layer that calls the deterministic engine through a scoped tool, validates every draft against trusted data, and falls back safely. | `answerQuestionWithAi`, `validateAiAnswer`, `AI_ENABLED` | `/api/assistant` |
 | `assistant-history.js` | Owner-scoped conversation and message persistence. Every read and write takes the session user id; foreign ids return no record. | `listConversations`, `getConversation`, `createConversation`, `appendMessage`, `aiHistory` | `/api/assistant`, `/api/assistant/conversations` |
-| `images.js` | Validates JPG/PNG/WEBP uploads and persists them to Supabase Storage, with local disk as the development fallback. | `saveProductImage`, `removeProductImage`, `inspectProductImage` | service-image routes |
+| `images.js` | Validates JPG/PNG/WEBP images and MP4/WEBM preview videos, then persists them to Supabase Storage with local disk as the development fallback. | `saveProductImage`, `removeProductImage`, `inspectProductImage`, `saveProductVideo`, `removeProductVideo`, `inspectProductVideo` | service media routes |
 | `mail.js` | Delivers password-reset email through Resend with a request timeout; prints the link in development. | `sendPasswordResetEmail` | auth routes |
 | `reports.js` | Aggregates bookings into summary/trend/logistics data and renders CSV or PDF. | `buildReport`, `reportCsv`, `reportPdf` | report routes, `scripts/report.mjs` |
 | `seed.js` | Branches, studio accounts, demo bookings with fixed ids. | `buildSeed`, `SEED_BRANCHES` | `store.js`, setup scripts |
@@ -86,7 +86,7 @@ stay interchangeable.
 | Auth | `POST /api/auth/register`, `/login`, `/mfa`, `/logout`, `/password`, `/mfa/setup`, `/mfa/enable`, `/mfa/disable`, `GET /api/auth/me` |
 | Catalog | `GET /api/services`, `GET /api/health`, `GET /api/ready` |
 | Owner pricing | `GET /api/pricing`, `PATCH /api/services/:id` |
-| Images | `GET /api/product-images`, `POST/DELETE /api/services/:id/image` |
+| Media | `GET /api/product-images`, `POST/DELETE /api/services/:id/image`, `POST/DELETE /api/services/:id/video` |
 | Audit | `GET /api/audit-logs` |
 | Bookings | `GET/POST /api/bookings`, `GET /api/bookings/:id`, `PATCH /api/bookings/:id`, `PATCH /api/bookings/:id/payment`, `PATCH /api/bookings/:id/logistics` |
 | Availability and assistant | `GET /api/availability`, `POST /api/assistant`, `GET /api/assistant/conversations`, `GET /api/assistant/conversations/:id` |

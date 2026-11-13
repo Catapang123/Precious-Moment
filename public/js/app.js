@@ -134,7 +134,7 @@ const NAV = {
     { key: 'inventory', label: 'Inventory', icon: 'inventory' },
     { key: 'payments', label: 'Payments', icon: 'payments' },
     { key: 'discounts', label: 'Discounts', icon: 'spark' },
-    { key: 'images', label: 'Product images', icon: 'camera' },
+    { key: 'images', label: 'Product media', icon: 'camera' },
     { key: 'pricing', label: 'Pricing', icon: 'payments' },
     { key: 'reports', label: 'Reports', icon: 'reports' },
     { key: 'team', label: 'Team', icon: 'staff' },
@@ -147,7 +147,7 @@ const NAV = {
     { key: 'calendar', label: 'Calendar', icon: 'calendar' },
     { key: 'inventory', label: 'Inventory', icon: 'inventory' },
     { key: 'payments', label: 'Payments', icon: 'payments' },
-    { key: 'images', label: 'Product images', icon: 'camera' },
+    { key: 'images', label: 'Product media', icon: 'camera' },
     { key: 'team', label: 'Team', icon: 'staff' },
     { key: 'alerts', label: 'Alerts', icon: 'mail' },
     { key: 'account', label: 'Account & security', icon: 'check' },
@@ -175,7 +175,7 @@ const PAGE_META = {
     inventory: { title: 'Inventory', subtitle: 'Physical booth units, maintenance blocks, and overlapping commitments.' },
     payments: { title: 'Payments', subtitle: 'Keep a clear record of deposits and balances.' },
     discounts: { title: 'Discounts', subtitle: 'Assign a loyalty or courtesy discount to a customer.' },
-    images: { title: 'Product images', subtitle: 'The shared catalog photos customers see — upload, replace, or remove.' },
+    images: { title: 'Product media', subtitle: 'The shared catalog photos and preview videos customers see — upload, replace, or remove.' },
     pricing: { title: 'Pricing', subtitle: 'Retail rates, quantity breaks, and the client-only price list.' },
     reports: { title: 'Reports', subtitle: 'The numbers behind the moments.' },
     team: { title: 'Team', subtitle: 'Studio accounts and the crew records available for assignment.' },
@@ -188,7 +188,7 @@ const PAGE_META = {
     calendar: { title: 'Branch logistics calendar', subtitle: 'Setup, event, and pickup schedules for your branch.' },
     inventory: { title: 'Studio inventory', subtitle: 'Shared physical units, maintenance blocks, and upcoming booth deployments.' },
     payments: { title: 'Branch payments', subtitle: 'Deposits and balances for your branch.' },
-    images: { title: 'Product images', subtitle: 'Manage the shared catalog photos for every product, at either branch.' },
+    images: { title: 'Product media', subtitle: 'Manage the shared catalog photos and preview videos for every product, at either branch.' },
     team: { title: 'Branch team', subtitle: 'Crew records available for this branch; they do not sign in.' },
     alerts: { title: 'Alerts', subtitle: 'New bookings that were routed to your branch.' },
     account: { title: 'Account & security', subtitle: 'Password and two-factor protection for your sign-in.' },
@@ -289,6 +289,13 @@ const IMAGE_ERRORS = {
   upload: 'Unable to upload the image. Please check your connection and try again.',
 };
 const KNOWN_IMAGE_ERRORS = new Set(Object.values(IMAGE_ERRORS));
+
+const VIDEO_ERRORS = {
+  format: 'Unsupported video format. Please upload MP4 or WEBM.',
+  size: 'Video exceeds the 25 MB limit.',
+  upload: 'Unable to upload the video. Please check your connection and try again.',
+};
+const KNOWN_VIDEO_ERRORS = new Set(Object.values(VIDEO_ERRORS));
 
 const DESIGN_MAX_BYTES = 10 * 1024 * 1024;
 const DESIGN_MAX_FILES = 8;
@@ -1484,6 +1491,15 @@ function serviceImageUrl(service) {
   // guard for browsers or CDNs that keep a stale copy after a replacement.
   if (url.startsWith('/uploads/') && service.image_updated_at) {
     return `${url}?v=${encodeURIComponent(String(service.image_updated_at))}`;
+  }
+  return url;
+}
+
+function serviceVideoUrl(service) {
+  const url = String(service?.video_url || '');
+  if (!url) return '';
+  if (url.startsWith('/uploads/') && service.video_updated_at) {
+    return `${url}?v=${encodeURIComponent(String(service.video_updated_at))}`;
   }
   return url;
 }
@@ -3841,7 +3857,7 @@ function renderAdminImages() {
     viewRoot.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">${ICONS.camera}</div>
-        <h3>Product images could not load</h3>
+        <h3>Product media could not load</h3>
         <p>${esc(state.imagesError)}</p>
         <div class="no-results-actions"><button class="btn btn-primary" type="button" data-images-retry>Try again</button></div>
       </div>`;
@@ -3874,12 +3890,12 @@ function renderAdminImages() {
 
   viewRoot.innerHTML = `
     <div class="page-intro">
-      <div><h2>The shared catalog, picture by picture</h2><p>Main Admin and Branch Admin changes apply to every customer screen. The previous image stays live until a replacement upload succeeds.</p></div>
+      <div><h2>The shared catalog, picture and motion</h2><p>Main Admin and Branch Admin changes apply to every customer screen. Add a short booth preview video so customers can see the experience before they book.</p></div>
       <div class="page-actions"><a class="btn" href="/welcome#prices" target="_blank" rel="noopener">View public catalog</a></div>
     </div>
     <div class="stats-strip">
       <div class="stat-cell"><span>All products</span><strong>${stats.total || services.length}</strong><small>Across every category</small></div>
-      <div class="stat-cell"><span>With an image</span><strong>${stats.with_image || 0}</strong><small>Approved and available</small></div>
+      <div class="stat-cell"><span>With an image</span><strong>${stats.with_image || 0}</strong><small>${stats.with_video || 0} booth ${stats.with_video === 1 ? 'video' : 'videos'} live</small></div>
       <div class="stat-cell"><span>Image needed</span><strong class="${stats.missing ? 'rose' : ''}">${stats.missing || 0}</strong><small>Upload before publishing</small></div>
       <div class="stat-cell"><span>Visible to customers</span><strong>${stats.visible || 0}</strong><small>Active and catalog-visible</small></div>
     </div>
@@ -3915,7 +3931,7 @@ function renderAdminImages() {
       }
     </div>
     <div class="panel" style="margin-top:20px">
-      <div class="panel-head"><div><h3>Recent image changes</h3><p>Who changed which catalog image, and when</p></div></div>
+      <div class="panel-head"><div><h3>Recent media changes</h3><p>Who changed which catalog image or booth video, and when</p></div></div>
       ${
         recent.length
           ? `<div class="activity-list">${recent
@@ -3924,13 +3940,13 @@ function renderAdminImages() {
                   <span class="workload-avatar">${esc(initials(log.actor_role === 'branch_admin' ? 'Branch admin' : 'Main admin'))}</span>
                   <div class="activity-copy">
                     <p><strong>${esc(log.metadata?.product || log.target_id || 'Product')}</strong></p>
-                    <span>${esc(String(log.action || '').replace('product_image.', '').replace('_', ' '))} · ${esc(log.actor_role || 'administrator')}</span>
+                    <span>${esc(String(log.action || '').replace(/^product_(image|video)\./, '').replaceAll('_', ' '))} · ${esc(log.actor_role || 'administrator')}</span>
                     <small>${relativeTime(log.created_at)}</small>
                   </div>
                 </div>`
               )
               .join('')}</div>`
-          : '<div class="table-empty">No image changes recorded yet.</div>'
+          : '<div class="table-empty">No media changes recorded yet.</div>'
       }
     </div>`;
 }
@@ -3958,6 +3974,27 @@ function imageAdminCard(service) {
         </div>
         <p class="tiny muted">JPG, PNG, or WEBP · 300 × 300 px minimum · 4 MB maximum. Preview before saving.</p>
         <p class="form-error" data-image-message role="alert"></p>
+        <div class="image-admin-video">
+          <div class="image-admin-video-head">
+            <strong>Preview video</strong>
+            ${service.video_url ? '<span class="tiny muted">Customers can play this from the product details.</span>' : '<span class="tiny muted">Optional; a short booth demo helps customers picture the experience.</span>'}
+          </div>
+          ${
+            service.video_url
+              ? `<video class="image-admin-video-player" controls preload="none"${service.image_url ? ` poster="${esc(serviceImageUrl(service))}"` : ''} src="${esc(serviceVideoUrl(service))}"></video>`
+              : '<div class="image-admin-video-empty">No preview video yet.</div>'
+          }
+          <div class="image-admin-actions">
+            <label class="btn btn-sm image-picker">
+              ${service.video_url ? 'Replace video' : 'Upload video'}
+              <input type="file" accept="video/mp4,video/webm" data-video-input="${esc(service.id)}" hidden />
+            </label>
+            ${service.video_url ? `<button class="btn btn-sm btn-danger" type="button" data-video-remove="${esc(service.id)}">Remove video</button>` : ''}
+            <span class="tiny muted" data-video-status></span>
+          </div>
+          <p class="tiny muted">MP4 or WEBM · 25 MB maximum · a short booth walkthrough works best. The upload replaces the current video only after it succeeds.</p>
+          <p class="form-error" data-video-message role="alert"></p>
+        </div>
       </div>
     </article>`;
 }
@@ -4092,6 +4129,89 @@ async function removeProductImageFile(id, button) {
     imageMessage(card, error.message);
     button.disabled = false;
     button.textContent = 'Remove';
+    delete button.dataset.armed;
+  }
+}
+
+function videoMessage(card, message) {
+  const box = card?.querySelector('[data-video-message]');
+  if (!box) return;
+  box.textContent = message;
+  box.classList.toggle('show', Boolean(message));
+}
+
+async function uploadProductVideo(input) {
+  const id = input.dataset.videoInput;
+  const card = input.closest('[data-image-card]');
+  const file = input.files?.[0];
+  if (!id || !card || !file) return;
+
+  videoMessage(card, '');
+  const reject = (message) => {
+    input.value = '';
+    videoMessage(card, message);
+  };
+  const lowerName = file.name.toLowerCase();
+  const inferredType = lowerName.endsWith('.mp4') ? 'video/mp4' : lowerName.endsWith('.webm') ? 'video/webm' : '';
+  const type = file.type || inferredType;
+  if (!['video/mp4', 'video/webm'].includes(type)) {
+    reject(VIDEO_ERRORS.format);
+    return;
+  }
+  if (file.size > 25 * 1024 * 1024) {
+    reject(VIDEO_ERRORS.size);
+    return;
+  }
+
+  const status = card.querySelector('[data-video-status]');
+  input.disabled = true;
+  if (status) status.textContent = 'Uploading…';
+  try {
+    const { service } = await api(`/api/services/${encodeURIComponent(id)}/video`, {
+      method: 'POST',
+      headers: { 'Content-Type': type },
+      body: file,
+    });
+    replaceServiceInState(service);
+    toast(`${service.name} preview video saved.`);
+    await loadProductImages();
+  } catch (error) {
+    console.error('Product video upload failed:', error);
+    const message =
+      error?.status === 413
+        ? VIDEO_ERRORS.size
+        : error?.status === 503
+          ? error.message
+          : [400, 415].includes(error?.status) && KNOWN_VIDEO_ERRORS.has(error.message)
+            ? error.message
+            : VIDEO_ERRORS.upload;
+    videoMessage(card, message);
+    input.disabled = false;
+    input.value = '';
+    if (status) status.textContent = '';
+  }
+}
+
+async function removeProductVideoFile(id, button) {
+  const card = document.querySelector(`[data-image-card="${id}"]`);
+  if (!card) return;
+  if (button.dataset.armed !== 'true') {
+    button.dataset.armed = 'true';
+    button.textContent = 'Tap again to remove';
+    toast('Removing the preview video leaves the product published. Tap once more.', 'warning');
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Removing…';
+  try {
+    const { service } = await api(`/api/services/${encodeURIComponent(id)}/video`, { method: 'DELETE' });
+    replaceServiceInState(service);
+    toast(`${service.name} preview video removed.`);
+    await loadProductImages();
+  } catch (error) {
+    videoMessage(card, error.message);
+    button.disabled = false;
+    button.textContent = 'Remove video';
     delete button.dataset.armed;
   }
 }
@@ -4246,7 +4366,7 @@ function priceServiceForm(service) {
             <span class="price-image-thumb">${productImageMarkup(service)}</span>
             <div>
               <strong>${service.image_url ? 'Product image ready' : 'Image required before publishing'}</strong>
-              <span>${service.image_url ? `Updated ${service.image_updated_at ? formatDateTime(service.image_updated_at) : 'by an administrator'}` : 'Upload a real photo or an accurate reference image in Product images.'}</span>
+              <span>${service.image_url ? `Updated ${service.image_updated_at ? formatDateTime(service.image_updated_at) : 'by an administrator'}` : 'Upload a real photo or an accurate reference image in Product media.'}</span>
             </div>
             <button class="btn btn-sm" type="button" data-nav="images">Manage image</button>
           </div>
@@ -4335,7 +4455,7 @@ function renderAdminPricing() {
       <div><h2>Products, prices, and availability</h2><p>Changes here are read by the catalog, booking form, assistant, checkout, and rate card. Existing bookings keep the price they were booked at.</p></div>
       <div class="page-actions">
         <button class="btn btn-primary" type="button" data-new-service>${state.newProductOpen ? 'Close form' : '+ Add product'}</button>
-        <button class="btn" type="button" data-nav="images">Product images${missingImages ? ` · ${missingImages} needed` : ''}</button>
+        <button class="btn" type="button" data-nav="images">Product media${missingImages ? ` · ${missingImages} needed` : ''}</button>
         <a class="btn" href="/welcome#prices" target="_blank" rel="noopener">View public rate card</a>
       </div>
     </div>
@@ -6329,6 +6449,12 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  const videoRemoveButton = target.closest('[data-video-remove]');
+  if (videoRemoveButton) {
+    await removeProductVideoFile(videoRemoveButton.dataset.videoRemove, videoRemoveButton);
+    return;
+  }
+
   if (target.closest('[data-images-retry]')) {
     state.images = null;
     state.imagesError = '';
@@ -6777,7 +6903,7 @@ document.addEventListener('dblclick', (event) => {
   openProductLightbox(image.dataset.productImage);
 });
 
-document.addEventListener('change', (event) => {
+document.addEventListener('change', async (event) => {
   const target = event.target;
 
   if (target.matches('[data-cart-width]') || target.matches('[data-cart-height]')) {
@@ -6792,6 +6918,11 @@ document.addEventListener('change', (event) => {
 
   if (target.matches('[data-image-input]')) {
     previewImageSelection(target);
+    return;
+  }
+
+  if (target.matches('[data-video-input]')) {
+    await uploadProductVideo(target);
     return;
   }
 

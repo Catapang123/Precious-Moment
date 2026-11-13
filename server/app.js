@@ -75,7 +75,14 @@ import {
   cancellationReasonsFor,
   validateCancellationReason,
 } from './cancellations.js';
-import { inspectProductImage, removeProductImage, saveProductImage } from './images.js';
+import {
+  inspectProductImage,
+  inspectProductVideo,
+  removeProductImage,
+  removeProductVideo,
+  saveProductImage,
+  saveProductVideo,
+} from './images.js';
 import { sendPasswordResetEmail } from './mail.js';
 import { BOOKING_STATUSES, buildReport, reportCsv, reportPdf } from './reports.js';
 import {
@@ -578,6 +585,10 @@ function publicService(service) {
     'image_url',
     'image_alt',
     'image_updated_at',
+    'video_url',
+    'video_mime',
+    'video_bytes',
+    'video_updated_at',
     'catalog_visible',
     'round_dimensions_up',
     'min_dimension',
@@ -610,6 +621,7 @@ export function createApp(store) {
       [
         "default-src 'self'",
         "img-src 'self' data: blob: https://images.unsplash.com https://*.supabase.co",
+        "media-src 'self' https://*.supabase.co",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src https://fonts.gstatic.com",
         "script-src 'self'",
@@ -1330,6 +1342,11 @@ export function createApp(store) {
         image_updated_by: null,
         image_width: null,
         image_height: null,
+        video_url: '',
+        video_mime: '',
+        video_bytes: null,
+        video_updated_at: null,
+        video_updated_by: null,
         // A new product is not published until an administrator uploads its
         // manually prepared product image.
         catalog_visible: false,
@@ -1530,17 +1547,23 @@ export function createApp(store) {
       const [services, logs] = await Promise.all([store.list('services'), store.list('audit_logs')]);
       services.sort((a, b) => (a.sort || 0) - (b.sort || 0));
       const missing = services.filter((service) => !service.image_url).length;
+      const withVideo = services.filter((service) => service.video_url).length;
       json(res, 200, {
         categories: CATEGORIES,
         services,
         stats: {
           total: services.length,
           with_image: services.length - missing,
+          with_video: withVideo,
           missing,
           visible: services.filter((service) => service.active !== false && service.catalog_visible !== false).length,
         },
         recent_changes: logs
-          .filter((log) => String(log.action || '').startsWith('product_image.'))
+          .filter(
+            (log) =>
+              String(log.action || '').startsWith('product_image.') ||
+              String(log.action || '').startsWith('product_video.')
+          )
           .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
           .slice(0, 30),
       });
@@ -1619,6 +1642,90 @@ export function createApp(store) {
         targetType: 'service',
         targetId: service.id,
         metadata: { product: service.name, previous_image: previous },
+      });
+      json(res, 200, { service: updated });
+    })
+  );
+
+  app.post(
+    '/api/services/:id/video',
+    requireRole('admin', 'branch_admin'),
+    express.raw({ type: ['video/mp4', 'video/webm'], limit: '30mb' }),
+    wrap(async (req, res) => {
+      const service = await store.get('services', req.params.id);
+      if (!service) throw fail(404, 'That product was not found.');
+      if (!Buffer.isBuffer(req.body) || !req.body.length) {
+        throw fail(415, 'Unsupported video format. Please upload MP4 or WEBM.');
+      }
+      const video = inspectProductVideo(req.body);
+      const newPath = await saveProductVideo(req.body, video);
+      const previous = service.video_url;
+      let updated;
+      try {
+        updated = await store.update('services', service.id, {
+          video_url: newPath,
+          video_mime: video.mime,
+          video_bytes: video.bytes,
+          video_updated_at: new Date().toISOString(),
+          video_updated_by: req.user.id,
+          admin_edited: true,
+          updated_at: new Date().toISOString(),
+        });
+      } catch (error) {
+        // Keep the old preview live if the database write fails.
+        await removeProductVideo(newPath);
+        throw error;
+      }
+      if (previous && previous !== newPath) {
+        await removeProductVideo(previous).catch((error) =>
+          console.error('Old product video could not be deleted:', error.message)
+        );
+      }
+      await audit(store, req, {
+        action: previous ? 'product_video.replaced' : 'product_video.uploaded',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'service',
+        targetId: service.id,
+        metadata: {
+          product: service.name,
+          previous_video: previous || '',
+          new_video: newPath,
+          mime: video.mime,
+          bytes: video.bytes,
+        },
+      });
+      json(res, 200, { service: updated });
+    })
+  );
+
+  app.delete(
+    '/api/services/:id/video',
+    requireRole('admin', 'branch_admin'),
+    wrap(async (req, res) => {
+      const service = await store.get('services', req.params.id);
+      if (!service) throw fail(404, 'That product was not found.');
+      if (!service.video_url) throw fail(400, 'This product does not have a preview video to remove.');
+      const previous = service.video_url;
+      const updated = await store.update('services', service.id, {
+        video_url: '',
+        video_mime: '',
+        video_bytes: null,
+        video_updated_at: new Date().toISOString(),
+        video_updated_by: req.user.id,
+        admin_edited: true,
+        updated_at: new Date().toISOString(),
+      });
+      await removeProductVideo(previous).catch((error) =>
+        console.error('Old product video could not be deleted:', error.message)
+      );
+      await audit(store, req, {
+        action: 'product_video.removed',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'service',
+        targetId: service.id,
+        metadata: { product: service.name, previous_video: previous },
       });
       json(res, 200, { service: updated });
     })

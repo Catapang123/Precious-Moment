@@ -196,6 +196,15 @@ export function serviceImageUrl(service) {
   return url;
 }
 
+export function serviceVideoUrl(service) {
+  const url = String(service?.video_url || '');
+  if (!url) return '';
+  if (url.startsWith('/uploads/') && service.video_updated_at) {
+    return `${url}?v=${encodeURIComponent(String(service.video_updated_at))}`;
+  }
+  return url;
+}
+
 export function availabilityLabel(value) {
   if (value === 'pickup') return 'Pickup at the branch';
   if (value === 'event') return 'Event deployment';

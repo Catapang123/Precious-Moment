@@ -129,6 +129,21 @@ function samplePng(width = 300, height = 300, rgb = [199, 43, 92]) {
   ]);
 }
 
+/** Tiny MP4/WebM headers: enough to exercise the media route without a binary fixture. */
+function sampleMp4() {
+  const buffer = Buffer.alloc(32);
+  buffer.writeUInt32BE(24, 0);
+  buffer.write('ftyp', 4, 'ascii');
+  buffer.write('mp42', 8, 'ascii');
+  buffer.write('mp42', 16, 'ascii');
+  buffer.write('isom', 20, 'ascii');
+  return buffer;
+}
+
+function sampleWebm() {
+  return Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f]);
+}
+
 async function latestResetLink() {
   const pattern = /\[development password reset\] (\S+)/g;
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -1439,6 +1454,74 @@ try {
   assert.ok(imageAudit.body.recent_changes.length >= 3);
   assert.ok(imageAudit.body.recent_changes.every((log) => log.actor_role === 'admin' || log.actor_role === 'branch_admin'));
   pass('both admin roles manage shared images with validation, replacement, audit, and visibility rules');
+
+  // ---- Booth preview videos: shared media, optional, and never allowed from a customer
+  const customerVideoUpload = await customer('/api/services/booth-360/video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'video/mp4' },
+    body: sampleMp4(),
+  });
+  assert.equal(customerVideoUpload.status, 403);
+
+  const invalidVideoUpload = await branch1('/api/services/booth-360/video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'video/mp4' },
+    body: Buffer.from('not a video'),
+  });
+  assert.equal(invalidVideoUpload.status, 400);
+  assert.equal(invalidVideoUpload.body.error, 'Unsupported video format. Please upload MP4 or WEBM.');
+
+  const oversizedVideoUpload = await branch1('/api/services/booth-360/video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'video/mp4' },
+    body: Buffer.concat([sampleMp4(), Buffer.alloc(25 * 1024 * 1024)]),
+  });
+  assert.equal(oversizedVideoUpload.status, 400);
+  assert.equal(oversizedVideoUpload.body.error, 'Video exceeds the 25 MB limit.');
+
+  const uploadedVideo = await branch1('/api/services/booth-360/video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'video/mp4' },
+    body: sampleMp4(),
+  });
+  assert.equal(uploadedVideo.status, 200, uploadedVideo.body.error);
+  assert.match(uploadedVideo.body.service.video_url, /^\/uploads\/products\/videos\/[a-f0-9-]+\.mp4$/);
+  assert.equal(uploadedVideo.body.service.video_mime, 'video/mp4');
+  assert.equal(uploadedVideo.body.service.video_bytes, 32);
+  const uploadedVideoPath = uploadedVideo.body.service.video_url;
+
+  const servedVideo = await publicSession(uploadedVideoPath);
+  assert.equal(servedVideo.status, 200);
+  assert.match(servedVideo.headers.get('content-type') || '', /video\/mp4/);
+
+  const publicBooth = await publicSession('/api/services');
+  assert.equal(
+    publicBooth.body.services.find((service) => service.id === 'booth-360').video_url,
+    uploadedVideoPath
+  );
+
+  const replacedVideo = await admin('/api/services/booth-360/video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'video/webm' },
+    body: sampleWebm(),
+  });
+  assert.equal(replacedVideo.status, 200, replacedVideo.body.error);
+  assert.match(replacedVideo.body.service.video_url, /\.webm$/);
+  assert.notEqual(replacedVideo.body.service.video_url, uploadedVideoPath);
+  assert.equal((await publicSession(uploadedVideoPath)).status, 404);
+
+  const videoConsole = await branch1('/api/product-images');
+  assert.ok(videoConsole.body.stats.with_video >= 1);
+  assert.ok(videoConsole.body.recent_changes.some((log) => String(log.action).startsWith('product_video.')));
+
+  const removedVideo = await branch1('/api/services/booth-360/video', { method: 'DELETE' });
+  assert.equal(removedVideo.status, 200);
+  assert.equal(removedVideo.body.service.video_url, '');
+  assert.equal(removedVideo.body.service.video_mime, '');
+  assert.equal((await publicSession(replacedVideo.body.service.video_url)).status, 404);
+  const afterVideoRemoval = await publicSession('/api/services');
+  assert.equal(afterVideoRemoval.body.services.find((service) => service.id === 'booth-360').video_url || '', '');
+  pass('branch heads upload, replace, and remove booth preview videos with audit and size/type checks');
 
   const branch2 = session();
   const branch2Login = await branch2('/api/auth/login', {

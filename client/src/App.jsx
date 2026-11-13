@@ -16,6 +16,7 @@ import {
   priceForQty,
   saveCart,
   serviceImageUrl,
+  serviceVideoUrl,
   supportsType,
   tierSummary,
   BOOTH_TYPES,
@@ -40,6 +41,7 @@ function Icon({ name, size = 20 }) {
     clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
     minus: <><path d="M5 12h14" /></>,
+    play: <><path d="M8 5v14l11-7-11-7Z" fill="currentColor" stroke="none" /></>,
     trash: <><path d="M4 7h16M9 7V4h6v3m-9 0 1 14h10l1-14M10 11v6M14 11v6" /></>,
     logout: <><path d="M10 4H5v16h5M14 8l4 4-4 4M9 12h9" /></>,
   };
@@ -97,9 +99,10 @@ function ProductCard({ service, onOpen, onQuickAdd, added }) {
         className="shop-card-media"
         type="button"
         onClick={() => onOpen(service)}
-        aria-label={`View ${service.name}`}
+        aria-label={`View ${service.name}${service.video_url ? ', includes preview video' : ''}`}
       >
         <ProductImage service={service} />
+        {service.video_url ? <span className="shop-card-play" aria-hidden="true"><Icon name="play" size={18} /></span> : null}
         <span className="shop-card-scrim" aria-hidden="true" />
         <span className="shop-card-hint">Quick view <Icon name="arrow" size={14} /></span>
         {service.popular ? <span className="shop-badge shop-badge--popular">Most booked</span> : null}
@@ -144,6 +147,7 @@ function ProductModal({ service, onClose, onAdd }) {
   const [width, setWidth] = useState('');
   const [height, setHeight] = useState('');
   const [attempted, setAttempted] = useState(false);
+  const [videoFailed, setVideoFailed] = useState(false);
   const dialog = useRef(null);
 
   useEffect(() => {
@@ -151,6 +155,7 @@ function ProductModal({ service, onClose, onAdd }) {
     setWidth('');
     setHeight('');
     setAttempted(false);
+    setVideoFailed(false);
     const onKey = (event) => {
       if (event.key === 'Escape') onClose();
     };
@@ -163,6 +168,8 @@ function ProductModal({ service, onClose, onAdd }) {
   const estimate = estimateLine(service, { qty, width, height });
   const tierText = tierSummary(service);
   const showError = Boolean(estimate.error) && (attempted || (area && (width !== '' || height !== '')));
+  const videoSource = serviceVideoUrl(service);
+  const showVideo = Boolean(videoSource) && !videoFailed;
 
   function submit(event) {
     event.preventDefault();
@@ -181,10 +188,30 @@ function ProductModal({ service, onClose, onAdd }) {
       <div className="product-modal" role="dialog" aria-modal="true" aria-labelledby="product-title" ref={dialog}>
         <button className="icon-button product-modal-close" type="button" onClick={onClose} aria-label="Close product details">×</button>
         <div className="product-modal-media">
-          <ProductImage service={service} eager />
+          {showVideo ? (
+            <video
+              className="product-modal-video"
+              controls
+              playsInline
+              preload="metadata"
+              poster={serviceImageUrl(service) || undefined}
+              aria-label={`${service.name} preview video`}
+              onError={() => setVideoFailed(true)}
+            >
+              <source src={videoSource} type={service.video_mime || undefined} />
+            </video>
+          ) : (
+            <ProductImage service={service} eager />
+          )}
           <div className="product-modal-media-note">
-            <Icon name="camera" size={17} />
-            <span>{service.image_url ? 'Actual studio product photo' : 'The studio will upload an actual product photo here.'}</span>
+            <Icon name={showVideo ? 'play' : 'camera'} size={17} />
+            <span>
+              {showVideo
+                ? 'Studio preview video'
+                : service.image_url
+                  ? 'Actual studio product photo'
+                  : 'The studio will upload an actual product photo here.'}
+            </span>
           </div>
         </div>
         <div className="product-modal-copy">
@@ -258,7 +285,7 @@ function ProductModal({ service, onClose, onAdd }) {
   );
 }
 
-function CartDrawer({ open, cart, onClose, onQuantity, onRemove, onCheckout, compatibility }) {
+function CartDrawer({ open, cart, user, onClose, onQuantity, onRemove, onCheckout, compatibility }) {
   const total = cart.reduce((sum, line) => sum + Number(line.estimate || 0), 0);
   const count = cart.reduce((sum, line) => sum + (line.pricing_mode === 'area' ? 1 : Number(line.qty) || 0), 0);
   useEffect(() => {
@@ -315,6 +342,11 @@ function CartDrawer({ open, cart, onClose, onQuantity, onRemove, onCheckout, com
               {!compatibility.ok ? <p className="shop-error shop-error--panel">{compatibility.reason}</p> : null}
               <div className="cart-total"><span>Estimated total</span><strong>{money(total)}</strong></div>
               <p className="shop-hint">Final pricing, discounts, and availability are confirmed by the studio.</p>
+              {!user ? (
+                <p className="shop-hint cart-account-hint">
+                  Checkout needs an account. You’ll create one or sign in before the booking form.
+                </p>
+              ) : null}
               <button className="shop-button shop-button--primary shop-button--block" type="button" onClick={onCheckout} disabled={!compatibility.ok}>
                 Continue to checkout <Icon name="arrow" size={17} />
               </button>
@@ -490,6 +522,7 @@ export default function App() {
   useEffect(() => {
     if (!user || !pendingCheckout) return;
     setPendingCheckout(false);
+    setCartOpen(false);
     setCheckoutOpen(true);
   }, [user, pendingCheckout]);
 
@@ -861,6 +894,7 @@ export default function App() {
       <CartDrawer
         open={cartOpen}
         cart={cart}
+        user={user}
         onClose={() => setCartOpen(false)}
         onQuantity={updateQuantity}
         onRemove={removeLine}
