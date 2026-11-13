@@ -17,6 +17,27 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { answerQuestion } from './assistant.js';
 import { capacityUnits, checkCapacity, toMinutes } from './availability.js';
+import {
+  BOOTH_KINDS,
+  BOOTH_TYPES,
+  blockWindow,
+  boothTypeForService,
+  boothUnitsForItems,
+  buildInventorySnapshot,
+  checkBoothInventory,
+  inventoryUsage,
+  readInventoryBlocks,
+  unitBelongsToType,
+} from './inventory.js';
+import {
+  DEPLOYMENT_LABELS,
+  DEPLOYMENT_STATUSES,
+  allUnitOptions,
+  assignedUnitsOf,
+  buildCalendar,
+  deploymentStatusOf,
+  validateAssignedUnits,
+} from './logistics.js';
 import { CATEGORIES, CLIENT_CATEGORY, CLIENT_PRICES, PRICE_REVIEWS, priceLine } from './catalog.js';
 import { locateBookingAddress } from './geo.js';
 import {
@@ -47,7 +68,7 @@ import {
 } from './cancellations.js';
 import { inspectProductImage, removeProductImage, saveProductImage } from './images.js';
 import { sendPasswordResetEmail } from './mail.js';
-import { BOOKING_STATUSES, buildReport, reportCsv } from './reports.js';
+import { BOOKING_STATUSES, buildReport, reportCsv, reportPdf } from './reports.js';
 import {
   COOKIE_NAME,
   MFA_COOKIE_NAME,
@@ -171,6 +192,19 @@ function validTime(value) {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || ''));
 }
 
+function reportRange(query = {}) {
+  const defaultFrom = `${todayISO().slice(0, 7)}-01`;
+  const from = String(query.from || defaultFrom);
+  const to = String(query.to || todayISO());
+  if (!validDate(from) || !validDate(to) || from > to) {
+    throw fail(400, 'Choose a valid report period.');
+  }
+  if ((new Date(to) - new Date(from)) / 86400000 > 366) {
+    throw fail(400, 'Report periods can cover at most one year.');
+  }
+  return { from, to };
+}
+
 async function activeDiscountFor(store, customerId) {
   const discounts = await store.list('discounts');
   return (
@@ -273,6 +307,15 @@ function normaliseBooking(booking) {
     discount_label: booking.discount_label || '',
     pickup_date: booking.pickup_date || (bookingTypeOf(booking) === 'pickup' ? booking.event_date : null),
     pickup_time: booking.pickup_time || '',
+    deployment_status: deploymentStatusOf(booking),
+    assigned_units: assignedUnitsOf(booking),
+    setup_date: booking.setup_date || null,
+    setup_time: booking.setup_time || '',
+    pickup_schedule_date: booking.pickup_schedule_date || null,
+    pickup_schedule_time: booking.pickup_schedule_time || '',
+    logistics_notes: booking.logistics_notes || '',
+    deployed_at: booking.deployed_at || null,
+    collected_at: booking.collected_at || null,
   };
 }
 
@@ -1656,12 +1699,18 @@ export function createApp(store) {
           );
         }
         try {
-          items.push(priceLine(service, raw));
+          items.push({
+            ...priceLine(service, raw),
+            // Snapshot the physical pool at booking time. Historical rows keep
+            // their meaning even if a catalog service is later renamed.
+            booth_type: boothTypeForService(service.id) || null,
+          });
         } catch (error) {
           throw fail(400, error.message);
         }
       }
       const subtotal = items.reduce((sum, item) => sum + item.line_total, 0);
+      const requestedBooths = boothUnitsForItems(items);
       if (subtotal <= 0 || subtotal > 1000000) throw fail(400, 'That booking total is not valid.');
 
       const branches = await store.list('branches');
@@ -1745,6 +1794,23 @@ export function createApp(store) {
             );
           }
         }
+
+        // Physical booth units are a second, stricter limit. It is checked
+        // even when the address still needs a branch, because the units are
+        // shared across the studio and must not be promised twice.
+        if (Object.values(requestedBooths).some(Boolean)) {
+          const [current, blockState] = await Promise.all([
+            store.list('bookings'),
+            readInventoryBlocks(store),
+          ]);
+          const boothCheck = checkBoothInventory(current, blockState.blocks, {
+            date: eventDate,
+            time: eventTime,
+            hours: durationHours,
+            items,
+          });
+          if (!boothCheck.ok) throw fail(409, boothCheck.message);
+        }
       }
 
       const discount = await activeDiscountFor(store, req.user.id);
@@ -1780,6 +1846,15 @@ export function createApp(store) {
         total,
         paid_at: null,
         items,
+        deployment_status: 'unassigned',
+        assigned_units: [],
+        setup_date: null,
+        setup_time: '',
+        pickup_schedule_date: null,
+        pickup_schedule_time: '',
+        logistics_notes: '',
+        deployed_at: null,
+        collected_at: null,
         // References are uploaded after the booking exists; the status stays
         // empty until the first file arrives.
         design_notes: designNotes,
@@ -1810,6 +1885,19 @@ export function createApp(store) {
                 `That time is full at ${capacity.capacity} simultaneous services.${nextSlot}`
               );
             }
+          }
+          if (bookingType === 'event' && Object.values(requestedBooths).some(Boolean)) {
+            const [current, blockState] = await Promise.all([
+              store.list('bookings'),
+              readInventoryBlocks(store),
+            ]);
+            const boothCheck = checkBoothInventory(current, blockState.blocks, {
+              date: eventDate,
+              time: eventTime,
+              hours: durationHours,
+              items,
+            });
+            if (!boothCheck.ok) throw fail(409, boothCheck.message);
           }
           for (let attempt = 0; attempt < 3; attempt += 1) {
             booking.ref = await nextBookingRef(store);
@@ -2067,6 +2155,31 @@ export function createApp(store) {
         patch.duration_hours !== undefined ||
         patch.branch_id !== undefined ||
         patch.status !== undefined;
+
+      // A scheduled deployment still needs its branch, and a changed event
+      // window must not leave the setup after the event or the pickup before it.
+      if (!['completed', 'cancelled'].includes(next.status) && touchesSchedule) {
+        if (deploymentStatusOf(next) !== 'unassigned' && !next.branch_id) {
+          throw fail(400, 'Assign a branch before changing this scheduled deployment.');
+        }
+        if (next.booking_type === 'event') {
+          const eventAt = Date.parse(`${next.event_date}T${next.event_time || '00:00'}:00Z`);
+          if (next.setup_date) {
+            const setupAt = Date.parse(`${next.setup_date}T${next.setup_time || '00:00'}:00Z`);
+            if (Number.isFinite(setupAt) && Number.isFinite(eventAt) && setupAt > eventAt) {
+              throw fail(409, 'Move the setup schedule before changing the event window.');
+            }
+          }
+          if (next.pickup_schedule_date) {
+            const pickupAt = Date.parse(
+              `${next.pickup_schedule_date}T${next.pickup_schedule_time || '00:00'}:00Z`
+            );
+            if (Number.isFinite(pickupAt) && Number.isFinite(eventAt) && pickupAt < eventAt) {
+              throw fail(409, 'Move the pickup schedule after changing the event window.');
+            }
+          }
+        }
+      }
       const updated = await withBookingLock(async () => {
         if (next.booking_type === 'event' && next.branch_id && touchesSchedule) {
           const units = capacityUnits(next.items);
@@ -2090,6 +2203,30 @@ export function createApp(store) {
                 `That time is full at ${capacity.capacity} simultaneous services.${nextSlot}`
               );
             }
+          }
+        }
+
+        if (
+          next.booking_type === 'event' &&
+          touchesSchedule &&
+          !['completed', 'cancelled'].includes(next.status) &&
+          Object.values(boothUnitsForItems(next.items)).some(Boolean)
+        ) {
+          const [current, blockState] = await Promise.all([
+            store.list('bookings'),
+            readInventoryBlocks(store),
+          ]);
+          const boothCheck = checkBoothInventory(current, blockState.blocks, {
+            date: String(next.event_date || '').slice(0, 10),
+            time: next.event_time || '09:00',
+            hours: next.duration_hours,
+            items: next.items || [],
+            excludeId: booking.id,
+          });
+          if (!boothCheck.ok) throw fail(409, boothCheck.message);
+          if (!['completed', 'cancelled'].includes(next.status)) {
+            const unitError = validateAssignedUnits(next, current, blockState.blocks);
+            if (unitError) throw fail(409, unitError);
           }
         }
 
@@ -2146,6 +2283,163 @@ export function createApp(store) {
         bookingLists(store),
         latestCancellation(store, booking.id),
       ]);
+      json(res, 200, {
+        booking: { ...hydrateBooking(updated, users, updates, branches), cancellation: latest },
+      });
+    })
+  );
+
+  app.patch(
+    '/api/bookings/:id/logistics',
+    requireRole('admin', 'branch_admin'),
+    wrap(async (req, res) => {
+      const booking = await bookingAccess(store, req.params.id, req.user, { manage: true });
+      const body = req.body || {};
+      const patch = {};
+      const messages = [];
+
+      if (body.deployment_status !== undefined) {
+        const status = String(body.deployment_status || 'unassigned');
+        if (!DEPLOYMENT_STATUSES.includes(status)) throw fail(400, 'Choose a valid deployment status.');
+        if (status !== deploymentStatusOf(booking)) {
+          patch.deployment_status = status;
+          messages.push(
+            `Deployment status updated to ${DEPLOYMENT_LABELS[status].toLowerCase()}.`
+          );
+        }
+      }
+
+      if (body.assigned_units !== undefined) {
+        if (!Array.isArray(body.assigned_units)) {
+          throw fail(400, 'Assigned units must be a list.');
+        }
+        if (body.assigned_units.length > 20) throw fail(400, 'Choose no more than 20 physical units.');
+        const units = assignedUnitsOf({ assigned_units: body.assigned_units });
+        const previous = assignedUnitsOf(booking);
+        if (units.join('|') !== previous.join('|')) {
+          patch.assigned_units = units;
+          messages.push(units.length ? `Assigned units: ${units.join(', ')}.` : 'Physical units released.');
+        }
+      }
+
+      if (body.setup_date !== undefined) {
+        const value = String(body.setup_date || '');
+        if (value && !validDate(value)) throw fail(400, 'Choose a valid setup date.');
+        patch.setup_date = value || null;
+      }
+      if (body.setup_time !== undefined) {
+        const value = String(body.setup_time || '');
+        if (value && !validTime(value)) throw fail(400, 'Choose a valid setup time.');
+        patch.setup_time = value;
+      }
+      if (body.pickup_schedule_date !== undefined) {
+        const value = String(body.pickup_schedule_date || '');
+        if (value && !validDate(value)) throw fail(400, 'Choose a valid pickup schedule date.');
+        patch.pickup_schedule_date = value || null;
+      }
+      if (body.pickup_schedule_time !== undefined) {
+        const value = String(body.pickup_schedule_time || '');
+        if (value && !validTime(value)) throw fail(400, 'Choose a valid pickup schedule time.');
+        patch.pickup_schedule_time = value;
+      }
+      if (body.logistics_notes !== undefined) {
+        const value = String(body.logistics_notes).trim();
+        if (value.length > 1000) throw fail(400, 'Keep logistics notes under 1,000 characters.');
+        patch.logistics_notes = value;
+      }
+
+      if (Object.keys(patch).length === 0) throw fail(400, 'Nothing to update.');
+
+      const candidate = normaliseBooking({ ...booking, ...patch });
+      if (candidate.booking_type === 'pickup' && (candidate.setup_date || candidate.pickup_schedule_date)) {
+        throw fail(400, 'Setup and event pickup schedules only apply to event bookings.');
+      }
+      if (candidate.setup_date) {
+        const setupAt = Date.parse(
+          `${candidate.setup_date}T${candidate.setup_time || '00:00'}:00Z`
+        );
+        const eventAt = Date.parse(`${candidate.event_date}T${candidate.event_time || '00:00'}:00Z`);
+        if (Number.isFinite(setupAt) && Number.isFinite(eventAt) && setupAt > eventAt) {
+          throw fail(400, 'Setup must be scheduled on or before the event start.');
+        }
+      }
+      if (candidate.pickup_schedule_date) {
+        const pickupAt = Date.parse(
+          `${candidate.pickup_schedule_date}T${candidate.pickup_schedule_time || '00:00'}:00Z`
+        );
+        const eventAt = Date.parse(`${candidate.event_date}T${candidate.event_time || '00:00'}:00Z`);
+        if (Number.isFinite(pickupAt) && Number.isFinite(eventAt) && pickupAt < eventAt) {
+          throw fail(400, 'Pickup cannot be scheduled before the event starts.');
+        }
+      }
+
+      const status = deploymentStatusOf(candidate);
+      if (status !== 'unassigned' && !candidate.branch_id) {
+        throw fail(400, 'Assign a branch before scheduling a deployment.');
+      }
+      if (candidate.booking_type === 'event' && status !== 'unassigned') {
+        const required = boothUnitsForItems(candidate.items || []);
+        const selected = assignedUnitsOf(candidate).reduce((counts, unit) => {
+          const type = Object.keys(BOOTH_TYPES).find((key) =>
+            BOOTH_TYPES[key].unitLabels.includes(unit)
+          );
+          if (type) counts[type] = (counts[type] || 0) + 1;
+          return counts;
+        }, {});
+        for (const [type, count] of Object.entries(required)) {
+          if (count > 0 && (selected[type] || 0) < count) {
+            throw fail(
+              400,
+              `Assign ${count} ${BOOTH_TYPES[type].label.toLowerCase()} unit${count === 1 ? '' : 's'} before changing the deployment status.`
+            );
+          }
+        }
+      }
+
+      let updated;
+      await withBookingLock(async () => {
+        const [bookings, blockState] = await Promise.all([
+          store.list('bookings'),
+          readInventoryBlocks(store),
+        ]);
+        const error = validateAssignedUnits(candidate, bookings, blockState.blocks);
+        if (error) throw fail(409, error);
+
+        const now = new Date().toISOString();
+        if (status === 'dispatched' || status === 'on_site') {
+          if (!candidate.deployed_at) patch.deployed_at = now;
+        } else if (status === 'collected') {
+          if (!candidate.deployed_at) patch.deployed_at = now;
+          if (!candidate.collected_at) patch.collected_at = now;
+        } else {
+          patch.deployed_at = null;
+          patch.collected_at = null;
+        }
+        updated = await store.update('bookings', booking.id, {
+          ...patch,
+          updated_at: now,
+        });
+      });
+
+      for (const message of messages) {
+        await addTimeline(store, booking.id, req.user.id, updated.status, message);
+      }
+      await audit(store, req, {
+        action: 'booking.logistics_updated',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'booking',
+        targetId: booking.id,
+        metadata: {
+          ref: booking.ref,
+          fields: Object.keys(patch),
+          deployment_status: deploymentStatusOf(updated),
+          assigned_units: assignedUnitsOf(updated),
+        },
+      });
+
+      const { users, updates, branches } = await bookingLists(store);
+      const latest = await latestCancellation(store, booking.id);
       json(res, 200, {
         booking: { ...hydrateBooking(updated, users, updates, branches), cancellation: latest },
       });
@@ -2525,6 +2819,222 @@ export function createApp(store) {
     })
   );
 
+  // ---- Physical booth inventory and maintenance blocks
+  /* ---------- Inventory and the in-app assistant ---------- */
+
+  app.get(
+    '/api/inventory',
+    requireRole('admin', 'branch_admin'),
+    wrap(async (req, res) => {
+      const date = String(req.query.date || todayISO());
+      const time = String(req.query.time || '09:00');
+      const hours = Number(req.query.hours || 3);
+      if (!validDate(date)) throw fail(400, 'Choose a valid inventory date.');
+      if (!validTime(time)) throw fail(400, 'Choose a valid inventory start time.');
+      if (!Number.isFinite(hours) || hours < 1 || hours > 12) {
+        throw fail(400, 'Choose an inventory window between 1 and 12 hours.');
+      }
+      const [bookings, blockState, users, branches] = await Promise.all([
+        store.list('bookings'),
+        readInventoryBlocks(store),
+        store.list('users'),
+        store.list('branches'),
+      ]);
+      const snapshot = buildInventorySnapshot({
+        bookings,
+        blocks: blockState.blocks,
+        users,
+        branches,
+        date,
+        time,
+        hours,
+        branchId: req.user.role === 'branch_admin' ? req.user.branch_id : '',
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      json(res, 200, {
+        inventory: snapshot,
+        blocks_available: blockState.available,
+        warning: blockState.warning,
+      });
+    })
+  );
+
+  app.post(
+    '/api/inventory/blocks',
+    requireRole('admin'),
+    wrap(async (req, res) => {
+      const body = req.body || {};
+      const boothType = String(body.booth_type || '');
+      if (!BOOTH_TYPES[boothType]) throw fail(400, 'Choose a valid booth type.');
+      const unitLabel = String(body.unit_label || '').trim().toUpperCase();
+      if (!unitBelongsToType(unitLabel, boothType)) {
+        throw fail(400, 'Choose a unit that belongs to that booth type.');
+      }
+      const kind = String(body.kind || 'maintenance');
+      if (!BOOTH_KINDS.includes(kind)) throw fail(400, 'Choose a valid maintenance reason.');
+      const startDate = String(body.start_date || '');
+      const endDate = String(body.end_date || '');
+      const startTime = String(body.start_time || '00:00');
+      const endTime = String(body.end_time || '23:59');
+      if (!validDate(startDate) || !validDate(endDate)) {
+        throw fail(400, 'Choose valid maintenance dates.');
+      }
+      if (!validTime(startTime) || !validTime(endTime)) {
+        throw fail(400, 'Choose valid maintenance times.');
+      }
+      const span = blockWindow({
+        start_date: startDate,
+        start_time: startTime,
+        end_date: endDate,
+        end_time: endTime,
+      });
+      if (!span) throw fail(400, 'The maintenance end must be after its start.');
+      if (span.end - span.start > 90 * 24 * 60 * 60 * 1000) {
+        throw fail(400, 'A maintenance block can cover at most 90 days.');
+      }
+      const reason = String(body.reason || '').trim();
+      if (reason.length > 300) throw fail(400, 'Keep the maintenance note under 300 characters.');
+
+      const blockState = await readInventoryBlocks(store);
+      if (!blockState.available) {
+        throw fail(503, 'Inventory blocks are not available yet. Run supabase/migrate-inventory.sql first.');
+      }
+      const block = {
+        id: crypto.randomUUID(),
+        booth_type: boothType,
+        unit_label: unitLabel,
+        kind,
+        reason,
+        start_date: startDate,
+        start_time: startTime,
+        end_date: endDate,
+        end_time: endTime,
+        active: true,
+        created_by: req.user.id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      // Serialise block creation with booking creation. Without this, a block
+      // and a booking could each read the old snapshot and both be accepted,
+      // leaving the unit promised after it was taken out of service.
+      await withBookingLock(async () => {
+        const [bookings, existingBlocks] = await Promise.all([
+          store.list('bookings'),
+          store.list('inventory_blocks'),
+        ]);
+        const sameUnit = existingBlocks.find(
+          (existing) =>
+            existing.active !== false &&
+            String(existing.unit_label || '').toUpperCase() === unitLabel &&
+            blockWindow(existing) &&
+            blockWindow(existing).start < span.end &&
+            blockWindow(existing).end > span.start
+        );
+        if (sameUnit) {
+          throw fail(409, 'That unit already has an overlapping maintenance block.');
+        }
+        const usage = inventoryUsage(bookings, existingBlocks, {
+          date: startDate,
+          time: startTime,
+          hours: (span.end - span.start) / 3600000,
+        });
+        const row = usage.types[boothType];
+        if (row.used + 1 > row.total) {
+          throw fail(
+            409,
+            `All ${BOOTH_TYPES[boothType].label.toLowerCase()} units are already committed in that window. Move the blocking window or release a booking before blocking another unit.`
+          );
+        }
+        await store.insert('inventory_blocks', block);
+      });
+      await audit(store, req, {
+        action: 'inventory.blocked',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'inventory_block',
+        targetId: block.id,
+        metadata: {
+          booth_type: boothType,
+          unit_label: unitLabel,
+          kind,
+          start_date: startDate,
+          end_date: endDate,
+        },
+      });
+      json(res, 201, { block });
+    })
+  );
+
+  app.patch(
+    '/api/inventory/blocks/:id',
+    requireRole('admin'),
+    wrap(async (req, res) => {
+      const block = await store.get('inventory_blocks', req.params.id);
+      if (!block) throw fail(404, 'That inventory block was not found.');
+      if (req.body?.active !== false) {
+        throw fail(400, 'Only releasing an inventory block is supported here.');
+      }
+      const updated = await store.update('inventory_blocks', block.id, {
+        active: false,
+        updated_at: new Date().toISOString(),
+      });
+      await audit(store, req, {
+        action: 'inventory.released',
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        targetType: 'inventory_block',
+        targetId: block.id,
+        metadata: {
+          booth_type: block.booth_type,
+          unit_label: block.unit_label,
+        },
+      });
+      json(res, 200, { block: updated });
+    })
+  );
+
+  // ---- Logistics calendar and deployment data
+  /* ---------- Deployment calendar ---------- */
+
+  app.get(
+    '/api/logistics',
+    requireRole('admin', 'branch_admin', 'staff'),
+    wrap(async (req, res) => {
+      const { from, to } = reportRange(req.query);
+      const [bookings, users, branches] = await Promise.all([
+        store.list('bookings'),
+        store.list('users'),
+        store.list('branches'),
+      ]);
+      let visible = bookings.filter((booking) => canViewBooking(req.user, booking));
+      if (req.user.role === 'branch_admin') {
+        visible = visible.filter((booking) => booking.branch_id === req.user.branch_id);
+      } else if (req.user.role === 'admin') {
+        const branchId = String(req.query.branch_id || '');
+        if (branchId) {
+          if (!branches.some((branch) => branch.id === branchId)) {
+            throw fail(400, 'Choose a valid branch.');
+          }
+          visible = visible.filter((booking) => booking.branch_id === branchId);
+        }
+      }
+      const calendar = buildCalendar(visible, users, branches, { from, to });
+      res.setHeader('Cache-Control', 'no-store');
+      json(res, 200, {
+        ...calendar,
+        deployment_statuses: DEPLOYMENT_STATUSES.map((status) => ({
+          value: status,
+          label: DEPLOYMENT_LABELS[status],
+        })),
+        unit_pool: allUnitOptions(),
+        branch_id:
+          req.user.role === 'branch_admin' ? req.user.branch_id : String(req.query.branch_id || ''),
+        branches: branches.map((branch) => ({ id: branch.id, name: branch.name })),
+      });
+    })
+  );
+
   // ---- Availability for a branch and time window
   /* ---------- Availability and the in-app assistant ---------- */
 
@@ -2562,9 +3072,22 @@ export function createApp(store) {
           capacity: service.capacity === true,
         }))
       );
-      const bookings = await store.list('bookings');
+      const [bookings, blockState] = await Promise.all([
+        store.list('bookings'),
+        readInventoryBlocks(store),
+      ]);
       const availability = checkCapacity(bookings, { date, branchId, start, hours, units });
-      json(res, 200, { availability });
+      const boothAvailability = checkBoothInventory(bookings, blockState.blocks, {
+        date,
+        time,
+        hours,
+        items: services.map((service) => ({
+          service_id: service.id,
+          qty: 1,
+          booth_type: boothTypeForService(service.id) || null,
+        })),
+      });
+      json(res, 200, { availability, booth_availability: boothAvailability });
     })
   );
 
@@ -3025,24 +3548,25 @@ export function createApp(store) {
     })
   );
 
-  /* ---------- Reports and CSV export ---------- */
+  /* ---------- Reports, graphs, and exports ---------- */
+
+  async function reportFor(req) {
+    const { from, to } = reportRange(req.query);
+    const [bookings, users, branches] = await Promise.all([
+      store.list('bookings'),
+      store.list('users'),
+      store.list('branches'),
+    ]);
+    return { report: buildReport(bookings, users, from, to, branches), from, to };
+  }
 
   app.get(
     '/api/reports',
     requireRole('admin'),
     wrap(async (req, res) => {
-      const now = new Date();
-      const defaultFrom = `${todayISO().slice(0, 7)}-01`;
-      const from = String(req.query.from || defaultFrom);
-      const to = String(req.query.to || todayISO());
-      if (!validDate(from) || !validDate(to) || from > to) {
-        throw fail(400, 'Choose a valid report period.');
-      }
-      if ((new Date(to) - new Date(from)) / 86400000 > 366) {
-        throw fail(400, 'Report periods can cover at most one year.');
-      }
-      const [bookings, users] = await Promise.all([store.list('bookings'), store.list('users')]);
-      json(res, 200, { report: buildReport(bookings, users, from, to) });
+      const { report } = await reportFor(req);
+      res.setHeader('Cache-Control', 'no-store');
+      json(res, 200, { report });
     })
   );
 
@@ -3050,20 +3574,23 @@ export function createApp(store) {
     '/api/reports.csv',
     requireRole('admin'),
     wrap(async (req, res) => {
-      const defaultFrom = `${todayISO().slice(0, 7)}-01`;
-      const from = String(req.query.from || defaultFrom);
-      const to = String(req.query.to || todayISO());
-      if (!validDate(from) || !validDate(to) || from > to) {
-        throw fail(400, 'Choose a valid report period.');
-      }
-      if ((new Date(to) - new Date(from)) / 86400000 > 366) {
-        throw fail(400, 'Report periods can cover at most one year.');
-      }
-      const [bookings, users] = await Promise.all([store.list('bookings'), store.list('users')]);
-      const report = buildReport(bookings, users, from, to);
+      const { report, from, to } = await reportFor(req);
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="precious-moments-${from}-to-${to}.csv"`);
       res.send(reportCsv(report));
+    })
+  );
+
+  app.get(
+    '/api/reports.pdf',
+    requireRole('admin'),
+    wrap(async (req, res) => {
+      const { report, from, to } = await reportFor(req);
+      const pdf = reportPdf(report);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="precious-moments-${from}-to-${to}.pdf"`);
+      res.setHeader('Content-Length', pdf.length);
+      res.send(pdf);
     })
   );
 

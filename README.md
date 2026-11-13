@@ -38,6 +38,9 @@ reporting is **Python**, and production data and product images live in **Supaba
 - Only ever see their own branch's bookings, payments, and crew — enforced on the server
 - Confirm dates, assign crew from their branch, and move bookings through the statuses
 - Create crew records for their branch
+- View the shared physical inventory and only their own branch's upcoming deployments;
+  maintenance blocks are owner-only
+- Use the logistics calendar for their branch's setups, events, and pickups
 - Get an alert for every new booking routed to their branch
 - Change their own password and turn on two-factor authentication
 
@@ -48,7 +51,10 @@ reporting is **Python**, and production data and product images live in **Supaba
 - Create, deactivate, and reset the owner/branch-head accounts from **Team**
 - Assign customer discounts from **Discounts**
 - See studio-wide stats, the "needs attention" queue, and recent activity
-- Generate reports for any period and download them as CSV
+- Assign deployment statuses, physical units, and setup/pickup schedules from a booking
+- Generate real-data graphs for any period and export CSV, PDF, or PNG
+- Add and release maintenance, damaged, or manually blocked physical booth units from
+  **Inventory**
 
 Role-based access is enforced on the server for every endpoint, not just in the UI.
 
@@ -86,6 +92,87 @@ Each branch can run at most **five booth or crew services at the same time**
 - Changing a booking's date, time, duration, branch, or reactivating its status re-runs
   the same check on the server.
 - `GET /api/availability` exposes the same calculation to the booking form.
+
+---
+
+## Physical booth inventory
+
+The five-simultaneous-service rule is a branch limit. It is not the same as the number
+of physical booths the studio owns. The studio has **nine shared units**, available from
+either branch:
+
+| Booth type | Units | Unit labels | Catalog services |
+| --- | ---: | --- | --- |
+| Photobooth | 5 | PB-1 … PB-5 | `photobooth-4r`, `photobooth-4r-magnetic`, `photobooth-strips`, `photobooth-strips-magnetic` |
+| Video booth | 1 | VB-1 | `booth-360` |
+| Mirror booth | 1 | MB-1 | `booth-mirror` |
+| Studio booth | 2 | SB-1, SB-2 | `booth-studio` |
+
+Every event booking must pass **both** limits. A request can fit the branch's five
+services and still be refused when the single Video or Mirror booth is already
+committed.
+
+- A unit stays committed for the whole event window, from the start time through the
+  duration; back-to-back windows are allowed.
+- Pending bookings count as **reserved**. Confirmed, in-progress, and ready bookings
+  count as **deployed**. Cancelled and completed bookings release their units.
+- The server checks the physical pool when the request is received and again inside the
+  same serialised booking lock used by the capacity check, immediately before insert.
+- Editing a booking's date, time, duration, branch, or active status re-runs the check.
+  Changing only notes or customer details does not.
+- A new booking item snapshots its `booth_type`, so a later catalog rename cannot move
+  an old booking into a different physical pool.
+- `GET /api/availability` returns `booth_availability` for the same window.
+
+### Maintenance and blocked units
+
+Open **Inventory** in the owner dashboard to see total, available, reserved, deployed,
+maintenance, and blocked units for any date, start time, and window length. Branch heads
+see the same shared counts and only their own branch's upcoming deployments.
+
+- The owner can block a specific physical unit as **Maintenance**, **Damaged**, or
+  **Manually blocked**, for up to 90 days.
+- A block removes that unit from every booking check in its window. It cannot overlap a
+  block on the same unit, and it cannot take the last available unit away from an
+  already-committed booking.
+- Releasing a block makes the unit bookable again; the record and audit trail remain.
+- The owner can open an upcoming deployment directly from the inventory list.
+
+### Enabling maintenance blocks on an existing database
+
+Run [supabase/migrate-inventory.sql](supabase/migrate-inventory.sql) once in the Supabase
+SQL editor. It only creates `pm_inventory_blocks` and its indexes; it does not change
+bookings, accounts, payments, catalog rows, or any existing data. Until it is applied,
+physical limits from bookings still work, but block creation is disabled with a clear
+message and the Inventory page continues to load. A failed block read (other than the
+missing table) fails the booking request instead of silently ignoring maintenance.
+
+---
+
+## Deployment logistics and calendar
+
+A booking has two separate progress tracks. The **booking status** covers the studio's
+work (pending through completed). The **deployment status** covers the physical booth
+journey: unassigned → scheduled → dispatched → on site → collected. Changing one never
+silently rewrites the other.
+
+- The owner or branch head can assign specific unit labels (`PB-1`…`PB-5`, `VB-1`,
+  `MB-1`, `SB-1`, `SB-2`) that belong to the booth types on the booking. A booking
+  cannot claim more units than it requested.
+- A deployment that is no longer unassigned must have a branch and enough units for every
+  booth line. Overlapping assignments, maintenance blocks, and cross-pool labels are
+  refused on the server.
+- Setup and event pickup schedules are separate from the event window. Setup cannot be
+  after the event start; pickup cannot be before it. Both appear on the logistics calendar.
+- **Calendar** shows every setup, event, and pickup for the selected month. The owner can
+  filter both branches; a branch head is restricted to their own branch by the server.
+  Clicking an entry opens the booking and its logistics editor.
+- Customers do not see internal unit assignments. Crew can read the logistics details for
+  bookings they can already access, while only owner/branch-head roles can edit them.
+
+Run [supabase/migrate-logistics.sql](supabase/migrate-logistics.sql) once on an existing
+Supabase project. It only adds booking columns and indexes; existing rows default to
+`unassigned` with no assigned units.
 
 ---
 
@@ -241,8 +328,10 @@ npm ci
    [supabase/migrate-features.sql](supabase/migrate-features.sql), and then
    [supabase/migrate-pricing.sql](supabase/migrate-pricing.sql), and finally
    [supabase/migrate-booking-availability.sql](supabase/migrate-booking-availability.sql),
-   and then [supabase/migrate-catalog-images-auth.sql](supabase/migrate-catalog-images-auth.sql)
-   instead.
+   [supabase/migrate-catalog-images-auth.sql](supabase/migrate-catalog-images-auth.sql),
+   [supabase/migrate-inventory.sql](supabase/migrate-inventory.sql), and
+   [supabase/migrate-logistics.sql](supabase/migrate-logistics.sql). Every migration is
+   additive and safe to re-run.
 3. Create `.env` from [.env.example](.env.example) and fill in:
 
    ```
@@ -374,8 +463,15 @@ Other security notes:
 
 ## Reports
 
-- **On demand:** open **Reports** in the owner dashboard, choose a period, and download
-  the CSV.
+- **On demand:** open **Reports** in the owner dashboard, choose a period, and review the
+  live summary, trends, branch performance, deployment pipeline, or booking detail.
+- **Graphs:** the Trends section plots payments and bookings by week from the same report
+  JSON. The Logistics section shows deployment status, assigned units, setups, and
+  pickups. Nothing on these graphs uses demo values.
+- **Exports:** CSV and PDF download from the report header; PNG renders the same loaded
+  report and weekly graph in the browser. The PDF is a dependency-free operational
+  summary; the CSV includes branch, deployment status, assigned units, setup, and pickup
+  columns.
 - **Node CLI:** `npm run report -- [from to]` writes
   `reports/precious-moments-<from>-to-<to>.csv`.
 - **Python CLI:** `python scripts/report.py [from to]` produces the same report using
@@ -425,6 +521,7 @@ where to add a feature — see [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTUR
 server.js                 Express entrypoint
 server/app.js             REST API, sessions, RBAC, booking types, discounts, reports
 server/availability.js    Five-simultaneous-service capacity and next free slot
+server/inventory.js       Physical booth units, overlap checks, maintenance blocks, snapshot
 server/assistant.js       Grounded, scoped answers from system data only
 server/geo.js             Address geocoding and nearest-branch assignment
 server/store.js           Supabase (pm_ tables) or local JSON data layer
@@ -442,6 +539,7 @@ supabase/migrate-features.sql  Booking types, discounts, accounts, MFA migration
 supabase/migrate-pricing.sql   Quantity breaks, setup fees, capacity, and review flags
 supabase/migrate-booking-availability.sql  Booking availability and product-management fields
 supabase/migrate-catalog-images-auth.sql  Images, measured pricing, resets, and audit logs
+supabase/migrate-inventory.sql  Additive physical inventory and maintenance-block table
 public/                   Marketing page, auth page, dashboards, styles, JS
 scripts/bootstrap.mjs     First administrator
 scripts/setup-branches.mjs  The two branch administrator accounts
@@ -483,7 +581,10 @@ send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` cont
 | GET    | `/api/bookings/:id`           | session, scoped   | One booking with items and timeline      |
 | PATCH  | `/api/bookings/:id`           | session, scoped   | Customer cancel, staff progress, admin edits |
 | PATCH  | `/api/bookings/:id/payment`   | admin, branch admin | Record or correct a payment            |
-| GET    | `/api/availability`           | session           | Capacity and next open start for a window |
+| GET    | `/api/availability`           | session           | Capacity, next open start, and physical booth availability |
+| GET    | `/api/inventory`              | admin, branch admin | Physical unit counts, upcoming deployments, and active blocks |
+| POST   | `/api/inventory/blocks`       | admin             | Block a specific unit for maintenance, damage, or manual hold |
+| PATCH  | `/api/inventory/blocks/:id`   | admin             | Release an inventory block               |
 | GET    | `/api/branches`               | session           | The registered branch locations          |
 | GET    | `/api/notifications`          | session           | Your booking alerts and unread count     |
 | POST   | `/api/notifications/read`     | session           | Mark your alerts read                    |
@@ -519,15 +620,19 @@ fixtures, and checks public pages, the recovery entry point, the password policy
 registration, decimal measurement rounding and tamper rejection, event and pickup
 bookings, manual branch priority, geocoded routing, review fallback, the
 five-simultaneous-service limit and next open slot (including parallel requests with
-unique references), encrypted two-factor secrets, audit coverage for sign-in, bookings,
+unique references), physical Photobooth/Video/Mirror/Studio limits and parallel races,
+maintenance-block reduction/release and branch-head read-only access, encrypted
+two-factor secrets, audit coverage for sign-in, bookings,
 payments, accounts, and MFA, print-only exemption, crew login
 refusal, crew records, studio account creation/deactivation/reset, two-factor enrollment
 and challenge, password change, discounts, the assistant's scope, branch isolation,
 payments, quantity breaks and quote gaps, owner price edits, frozen order snapshots,
 shared image permissions/validation/replacement/removal, hashed single-use password
 resets with session revocation, client-rate confidentiality, cross-origin protection,
-reports, and CSV export. It exits non-zero on the first failure and leaves production
-data untouched.
+deployment statuses, unit assignment and schedule validation, branch-scoped logistics
+calendars, real-data report trends, PDF/CSV exports, role-scoped inventory/logistics
+assistant answers, and CSV export. It exits non-zero on the first failure and leaves
+production data untouched.
 
 ---
 
@@ -543,10 +648,11 @@ data untouched.
 - Two-factor is available on every account and recommended for the owner and branch
   heads, but it is not forced. The owner can reset it from Team or from a customer's
   booking drawer.
-- Booking capacity and reference allocation are serialised inside one Node process.
-  Running more than one app instance requires a database-level lock so two processes
-  cannot both fill the last slot; the unique reference constraint still prevents
-  duplicate references.
+- Booking capacity, physical inventory checks, block creation, and reference
+  allocation are serialised inside one Node process. Running more than one app instance
+  requires a database-level lock so two processes cannot both fill the last unit or
+  cross a maintenance block; the unique reference constraint still prevents duplicate
+  references.
 - Email addresses are not verified at registration. A mistyped address can still book;
   password-reset email simply will not arrive for it.
 - Booking lists return every role-visible row and the audit log is capped at 200 entries;
@@ -556,8 +662,12 @@ data untouched.
   the same `[{ lat, lon }]` shape.
 - Payments are recorded, not collected: there is no payment gateway or receipt upload.
 - The capacity guard counts booth/coverage services, not print production; print work is
-  queued by the studio and is not limited by the five-slot rule.
-- Reports are CSV only. Scheduled delivery is a GitHub Actions artifact, not email.
+  queued by the studio and is not limited by the five-slot rule. Physical inventory
+  covers only the four booth types above; photo/video coverage without a booth is not a
+  physical unit.
+- Report exports are CSV, PDF, and PNG. Scheduled delivery is a GitHub Actions artifact,
+  not email. The PDF/PNG are operational summaries; the CSV remains the complete
+  row-level export.
 - Photographs on the landing and sign-in pages are from Unsplash, and contact details
   such as `hello@preciousmoments.ph` are placeholders. Prices come from the studio's
   2026 price sheet; conflicting workbook values and services not on the sheet are

@@ -102,8 +102,34 @@ create table if not exists public.pm_bookings (
   total numeric(12, 2) not null check (total >= 0),
   paid_at timestamptz,
   items jsonb not null default '[]'::jsonb,
+  deployment_status text not null default 'unassigned'
+    check (deployment_status in ('unassigned', 'scheduled', 'dispatched', 'on_site', 'collected')),
+  assigned_units jsonb not null default '[]'::jsonb,
+  setup_date date,
+  setup_time text not null default '',
+  pickup_schedule_date date,
+  pickup_schedule_time text not null default '',
+  logistics_notes text not null default '',
+  deployed_at timestamptz,
+  collected_at timestamptz,
   design_notes text not null default '',
   design_status text check (design_status in ('for_review', 'in_progress', 'for_approval', 'approved')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.pm_inventory_blocks (
+  id text primary key,
+  booth_type text not null check (booth_type in ('photobooth', 'video', 'mirror', 'studio')),
+  unit_label text not null,
+  kind text not null default 'maintenance' check (kind in ('maintenance', 'damaged', 'blocked')),
+  reason text not null default '',
+  start_date date not null,
+  start_time text not null default '00:00',
+  end_date date not null,
+  end_time text not null default '23:59',
+  active boolean not null default true,
+  created_by text references public.pm_users(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -207,6 +233,13 @@ create index if not exists pm_bookings_staff_idx on public.pm_bookings (staff_id
 create index if not exists pm_bookings_event_date_idx on public.pm_bookings (event_date);
 create index if not exists pm_bookings_status_idx on public.pm_bookings (status);
 create index if not exists pm_bookings_type_idx on public.pm_bookings (booking_type);
+create index if not exists pm_bookings_deployment_idx on public.pm_bookings (deployment_status);
+create index if not exists pm_bookings_setup_date_idx on public.pm_bookings (setup_date);
+create index if not exists pm_bookings_pickup_schedule_idx on public.pm_bookings (pickup_schedule_date);
+create index if not exists pm_inventory_blocks_window_idx
+  on public.pm_inventory_blocks (booth_type, start_date, end_date);
+create index if not exists pm_inventory_blocks_active_idx
+  on public.pm_inventory_blocks (active, start_date);
 create index if not exists pm_discounts_customer_idx on public.pm_discounts (customer_id) where active;
 create index if not exists pm_password_resets_token_idx on public.pm_password_resets (token_hash);
 create index if not exists pm_password_resets_user_idx on public.pm_password_resets (user_id, created_at desc);
@@ -243,6 +276,7 @@ alter table public.pm_branches enable row level security;
 alter table public.pm_users enable row level security;
 alter table public.pm_services enable row level security;
 alter table public.pm_bookings enable row level security;
+alter table public.pm_inventory_blocks enable row level security;
 alter table public.pm_booking_updates enable row level security;
 alter table public.pm_notifications enable row level security;
 alter table public.pm_discounts enable row level security;

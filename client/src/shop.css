@@ -1,32 +1,38 @@
 :root {
-  --paper: #fff7f3;
-  --paper-2: #fffdfb;
-  --blush: #ffe1ea;
-  --blush-2: #fff0f4;
-  --blush-3: #ffd4e1;
-  --rose: #c72b5c;
-  --rose-bright: #e4477b;
-  --rose-deep: #991943;
-  --rose-soft: #f3a8bf;
-  --ink: #351b27;
-  --ink-soft: #725863;
-  --ink-faint: #9c858e;
-  --plum: #2a1420;
-  --gold: #c6953c;
-  --line: rgba(53, 27, 39, 0.13);
-  --line-strong: rgba(53, 27, 39, 0.24);
-  --success: #2c7352;
-  --success-bg: #e4f4ea;
-  --warning: #8a5a12;
-  --warning-bg: #fbefd8;
-  --danger: #a92e3f;
-  --danger-bg: #fbe7ea;
+  --paper: #080508;
+  --paper-2: #140c12;
+  --blush: #28101e;
+  --blush-2: #1b0e17;
+  --blush-3: #3a1730;
+  --rose: #f0559b;
+  --rose-bright: #ff85bb;
+  --rose-deep: #ffb1d0;
+  --rose-soft: #c68ba4;
+  --ink: #fbeef4;
+  --ink-soft: #c9adba;
+  --ink-faint: #92727f;
+  --plum: #0b0509;
+  --gold: #e2a0b8;
+  --line: rgba(255, 170, 206, 0.14);
+  --line-strong: rgba(255, 170, 206, 0.26);
+  --success: #8bd4a9;
+  --success-bg: #14271c;
+  --warning: #e9bd76;
+  --warning-bg: #2a2012;
+  --danger: #ff9199;
+  --danger-bg: #2b1416;
+  --neutral-bg: #211915;
+  --info: #95c9ef;
+  --info-bg: #12232f;
+  --on-dark: #fff4f8;
+  --glow: rgba(240, 85, 155, 0.18);
   --serif: "Instrument Serif", Georgia, "Times New Roman", serif;
   --sans: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --shadow-soft: 0 18px 50px rgba(53, 27, 39, 0.08);
-  --shadow-card: 0 24px 70px rgba(53, 27, 39, 0.14);
-  --radius: 18px;
+  --shadow-soft: 0 20px 60px rgba(0, 0, 0, 0.38);
+  --shadow-card: 0 30px 90px rgba(0, 0, 0, 0.52);
+  --radius: 16px;
   --container: 1180px;
+  color-scheme: dark;
 }
 
 *,
@@ -105,7 +111,7 @@ h2 em {
 }
 
 :focus-visible {
-  outline: 3px solid rgba(199, 43, 92, 0.42);
+  outline: 3px solid rgba(240, 85, 155, 0.42);
   outline-offset: 3px;
 }
 
@@ -117,7 +123,7 @@ h2 em {
   padding: 10px 16px;
   border-radius: 999px;
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-dark);
   font-size: 0.8rem;
   font-weight: 700;
   transition: top 0.2s ease;
@@ -158,7 +164,7 @@ h2 em {
   height: 7px;
   border-radius: 50%;
   background: var(--rose);
-  box-shadow: 0 0 0 4px rgba(199, 43, 92, 0.12);
+  box-shadow: 0 0 0 4px rgba(240, 85, 155, 0.12);
   animation: livePulse 2.4s ease-in-out infinite;
 }
 
@@ -194,7 +200,7 @@ h2 em {
   place-items: center;
   width: 42px;
   height: 42px;
-  border: 1px solid rgba(199, 43, 92, 0.3);
+  border: 1px solid rgba(240, 85, 155, 0.3);
   border-radius: 50%;
   background:
     radial-gradient(circle at 34% 26%, #fff 0 8%, transparent 9%),
@@ -310,7 +316,7 @@ h2 em {
 
 .shop-button:hover {
   transform: translateY(-1px);
-  border-color: rgba(199, 43, 92, 0.32);
+  border-color: rgba(240, 85, 155, 0.32);
   box-shadow: 0 10px 24px rgba(53, 27, 39, 0.08);
 }
 
@@ -329,18 +335,18 @@ h2 em {
   border-color: var(--rose);
   background: linear-gradient(135deg, var(--rose), var(--rose-deep));
   color: #fff;
-  box-shadow: 0 10px 26px rgba(153, 25, 67, 0.18);
+  box-shadow: 0 10px 26px rgba(206, 59, 127, 0.18);
 }
 
 .shop-button--primary:hover {
   border-color: var(--rose-bright);
   background: linear-gradient(135deg, var(--rose-bright), var(--rose));
-  box-shadow: 0 14px 32px rgba(153, 25, 67, 0.24);
+  box-shadow: 0 14px 32px rgba(206, 59, 127, 0.24);
 }
 
 .shop-button--outline {
   background: transparent;
-  border-color: rgba(199, 43, 92, 0.32);
+  border-color: rgba(240, 85, 155, 0.32);
   color: var(--rose-deep);
 }
 
@@ -405,7 +411,7 @@ h2 em {
 
 .shop-cart-button:hover {
   transform: translateY(-1px);
-  border-color: rgba(199, 43, 92, 0.3);
+  border-color: rgba(240, 85, 155, 0.3);
   box-shadow: var(--shadow-soft);
 }
 
@@ -511,9 +517,9 @@ h2 em {
   right: -12%;
   width: 42rem;
   height: 42rem;
-  border: 1px solid rgba(199, 43, 92, 0.07);
+  border: 1px solid rgba(240, 85, 155, 0.07);
   border-radius: 50%;
-  box-shadow: 0 0 0 70px rgba(199, 43, 92, 0.025), 0 0 0 140px rgba(199, 43, 92, 0.018);
+  box-shadow: 0 0 0 70px rgba(240, 85, 155, 0.025), 0 0 0 140px rgba(240, 85, 155, 0.018);
   pointer-events: none;
 }
 
@@ -578,10 +584,10 @@ h2 em {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 28px;
   background:
-    radial-gradient(circle at 100% 0%, rgba(199, 43, 92, 0.4), transparent 18rem),
-    radial-gradient(circle at 0% 100%, rgba(198, 149, 60, 0.18), transparent 15rem),
+    radial-gradient(circle at 100% 0%, rgba(240, 85, 155, 0.4), transparent 18rem),
+    radial-gradient(circle at 0% 100%, rgba(226, 160, 184, 0.18), transparent 15rem),
     var(--plum);
-  color: var(--paper);
+  color: var(--on-dark);
   box-shadow: 0 30px 80px rgba(42, 20, 32, 0.24);
   animation: heroBoardIn 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -706,7 +712,7 @@ h2 em {
 }
 
 .hero-board-note strong {
-  color: var(--paper);
+  color: var(--on-dark);
 }
 
 .hero-board-seal {
@@ -815,8 +821,8 @@ h2 em {
 }
 
 .catalog-search:focus-within {
-  border-color: rgba(199, 43, 92, 0.38);
-  box-shadow: 0 0 0 4px rgba(199, 43, 92, 0.07);
+  border-color: rgba(240, 85, 155, 0.38);
+  box-shadow: 0 0 0 4px rgba(240, 85, 155, 0.07);
 }
 
 .catalog-search input {
@@ -883,7 +889,7 @@ h2 em {
 
 .catalog-tabs button:hover {
   transform: translateY(-1px);
-  border-color: rgba(199, 43, 92, 0.25);
+  border-color: rgba(240, 85, 155, 0.25);
   color: var(--ink);
 }
 
@@ -891,7 +897,7 @@ h2 em {
   border-color: var(--rose);
   background: var(--rose);
   color: #fff;
-  box-shadow: 0 7px 18px rgba(153, 25, 67, 0.18);
+  box-shadow: 0 7px 18px rgba(206, 59, 127, 0.18);
 }
 
 .catalog-tabs button.active span {
@@ -944,7 +950,7 @@ h2 em {
 
 .shop-card:hover {
   transform: translateY(-5px);
-  border-color: rgba(199, 43, 92, 0.22);
+  border-color: rgba(240, 85, 155, 0.22);
   box-shadow: 0 20px 44px rgba(53, 27, 39, 0.11);
 }
 
@@ -1023,7 +1029,7 @@ h2 em {
 
 .shop-badge--popular {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-dark);
 }
 
 .shop-badge--booth {
@@ -1046,7 +1052,7 @@ h2 em {
   text-align: center;
   background:
     radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.8), transparent 45%),
-    repeating-linear-gradient(135deg, rgba(199, 43, 92, 0.035) 0 8px, transparent 8px 16px),
+    repeating-linear-gradient(135deg, rgba(240, 85, 155, 0.035) 0 8px, transparent 8px 16px),
     var(--blush-2);
   color: var(--ink-soft);
 }
@@ -1057,7 +1063,7 @@ h2 em {
   width: 37px;
   height: 37px;
   margin-bottom: 3px;
-  border: 1px solid rgba(199, 43, 92, 0.22);
+  border: 1px solid rgba(240, 85, 155, 0.22);
   border-radius: 50%;
   background: var(--paper-2);
   color: var(--rose-deep);
@@ -1250,7 +1256,7 @@ h2 em {
   width: 60px;
   height: 60px;
   margin-bottom: 17px;
-  border: 1px solid rgba(199, 43, 92, 0.22);
+  border: 1px solid rgba(240, 85, 155, 0.22);
   border-radius: 50%;
   background: var(--blush-2);
   color: var(--rose-deep);
@@ -1336,7 +1342,7 @@ h2 em {
 .shop-footer {
   padding-top: 48px;
   background: var(--plum);
-  color: var(--paper);
+  color: var(--on-dark);
 }
 
 .shop-footer-grid {
@@ -1347,7 +1353,7 @@ h2 em {
 }
 
 .shop-footer .shop-brand .brand-name {
-  color: var(--paper);
+  color: var(--on-dark);
 }
 
 .shop-footer .shop-brand .brand-sub {
@@ -1425,7 +1431,7 @@ h2 em {
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 999px;
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-dark);
   box-shadow: 0 14px 34px rgba(42, 20, 32, 0.28);
   font-size: 0.68rem;
   font-weight: 800;
@@ -1767,7 +1773,7 @@ h2 em {
 }
 
 .icon-button:hover {
-  border-color: rgba(199, 43, 92, 0.3);
+  border-color: rgba(240, 85, 155, 0.3);
   background: var(--blush-2);
 }
 
@@ -1942,7 +1948,7 @@ h2 em {
   width: 62px;
   height: 62px;
   margin-bottom: 16px;
-  border: 1px solid rgba(199, 43, 92, 0.22);
+  border: 1px solid rgba(240, 85, 155, 0.22);
   border-radius: 50%;
   background: var(--blush-2);
   color: var(--rose-deep);
@@ -1997,9 +2003,9 @@ h2 em {
 }
 
 .shop-input:focus {
-  border-color: rgba(199, 43, 92, 0.52);
-  background: #fff;
-  box-shadow: 0 0 0 4px rgba(199, 43, 92, 0.07);
+  border-color: rgba(240, 85, 155, 0.52);
+  background: var(--paper-2);
+  box-shadow: 0 0 0 4px rgba(240, 85, 155, 0.07);
 }
 
 .shop-input:disabled {
@@ -2578,7 +2584,7 @@ textarea.shop-input {
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 13px;
   background: var(--ink);
-  color: var(--paper);
+  color: var(--on-dark);
   box-shadow: 0 18px 45px rgba(42, 20, 32, 0.28);
   animation: toastIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -2591,7 +2597,7 @@ textarea.shop-input {
   flex: 0 0 22px;
   border-radius: 50%;
   background: var(--success);
-  color: #fff;
+  color: #102318;
   font-size: 0.68rem;
   font-weight: 800;
 }
@@ -2655,8 +2661,8 @@ textarea.shop-input {
 /* ---------- Animations ---------- */
 
 @keyframes livePulse {
-  0%, 100% { box-shadow: 0 0 0 4px rgba(199, 43, 92, 0.12); }
-  50% { box-shadow: 0 0 0 7px rgba(199, 43, 92, 0.03); }
+  0%, 100% { box-shadow: 0 0 0 4px rgba(240, 85, 155, 0.12); }
+  50% { box-shadow: 0 0 0 7px rgba(240, 85, 155, 0.03); }
 }
 
 @keyframes heroBoardIn {
@@ -2815,4 +2821,359 @@ textarea.shop-input {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* =========================================================
+   Pink-to-black appearance
+   ========================================================= */
+
+::selection {
+  background: rgba(240, 85, 155, 0.38);
+  color: var(--on-dark);
+}
+
+html {
+  scrollbar-color: #4a1f35 #0b0509;
+}
+
+body {
+  background: var(--paper);
+}
+
+.skip-link {
+  background: #fbeef4;
+  color: #1a0712;
+}
+
+.shop-shell {
+  background:
+    radial-gradient(circle at 72% -8%, rgba(255, 55, 138, 0.3), transparent 34rem),
+    radial-gradient(circle at 2% 12%, rgba(124, 25, 70, 0.16), transparent 28rem),
+    linear-gradient(165deg, #2b0819 0%, #14060e 42%, #080508 72%, #050305 100%);
+  background-attachment: fixed;
+}
+
+.shop-header {
+  border-bottom-color: rgba(255, 255, 255, 0.05);
+  background: rgba(8, 5, 8, 0.78);
+}
+
+.brand-seal {
+  border-color: rgba(255, 145, 187, 0.26);
+  background: linear-gradient(145deg, #c23b7c, #5c0d30);
+  color: #fff4f8;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2), 0 8px 24px rgba(240, 85, 155, 0.16);
+}
+
+.shop-button {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.shop-button:hover {
+  border-color: rgba(255, 173, 205, 0.34);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.32);
+}
+
+.shop-button--primary {
+  border-color: rgba(255, 240, 247, 0.86);
+  background: #fbeef4;
+  color: #1a0712;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+.shop-button--primary:hover {
+  border-color: #ffd1e2;
+  background: #ffd1e2;
+  color: #1a0712;
+  box-shadow: 0 14px 32px rgba(240, 85, 155, 0.18);
+}
+
+.shop-button--outline {
+  background: transparent;
+  border-color: rgba(255, 133, 180, 0.3);
+  color: var(--rose-deep);
+}
+
+.shop-button--ghost {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.shop-button--ghost:hover {
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: none;
+}
+
+.shop-button.is-added {
+  border-color: var(--success);
+  background: var(--success);
+  color: #102318;
+}
+
+.shop-cart-button,
+.shop-account,
+.shop-menu-button,
+.account-popover {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: var(--line);
+}
+
+.cart-count {
+  color: #1a0712;
+}
+
+.account-avatar {
+  background: rgba(240, 85, 155, 0.16);
+  color: var(--rose-deep);
+}
+
+.catalog-tabs button span {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink-faint);
+}
+
+.catalog-tabs button.active {
+  border-color: #fbeef4;
+  background: #fbeef4;
+  color: #1a0712;
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.24);
+}
+
+.catalog-tabs button.active span {
+  background: rgba(27, 7, 16, 0.12);
+  color: #1a0712;
+}
+
+.shop-hero::before {
+  border-color: rgba(240, 85, 155, 0.09);
+  box-shadow: 0 0 0 70px rgba(240, 85, 155, 0.03), 0 0 0 140px rgba(240, 85, 155, 0.02);
+}
+
+.hero-board {
+  border-color: rgba(255, 174, 205, 0.14);
+  box-shadow: 0 34px 90px rgba(0, 0, 0, 0.5);
+}
+
+.hero-booth-icon {
+  background: rgba(240, 85, 155, 0.13);
+  color: var(--rose-deep);
+}
+
+.shop-trust {
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.shop-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)), var(--paper-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.shop-card:hover {
+  border-color: rgba(255, 145, 187, 0.24);
+  box-shadow: 0 24px 52px rgba(0, 0, 0, 0.44);
+}
+
+.shop-card-scrim {
+  background: linear-gradient(180deg, transparent 50%, rgba(10, 6, 4, 0.72));
+}
+
+.shop-card-hint {
+  background: rgba(23, 15, 12, 0.94);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+.shop-badge--popular {
+  background: rgba(240, 85, 155, 0.16);
+  border: 1px solid rgba(255, 133, 180, 0.28);
+  color: var(--rose-bright);
+  box-shadow: none;
+}
+
+.shop-badge--booth {
+  background: rgba(23, 15, 12, 0.9);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  box-shadow: none;
+}
+
+.shop-card-bottom {
+  border-top-color: var(--line);
+}
+
+.shop-card-actions .shop-button--primary {
+  border-color: rgba(255, 133, 180, 0.24);
+  background: rgba(240, 85, 155, 0.12);
+  color: var(--rose-bright);
+  box-shadow: none;
+}
+
+.shop-card-actions .shop-button--primary:hover {
+  border-color: var(--rose);
+  background: var(--rose);
+  color: #1a0712;
+}
+
+.shop-image-missing {
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 185, 212, 0.08), transparent 45%),
+    repeating-linear-gradient(135deg, rgba(240, 85, 155, 0.05) 0 8px, transparent 8px 16px),
+    var(--blush-2);
+}
+
+.catalog-empty {
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.shop-how {
+  background:
+    linear-gradient(180deg, rgba(240, 85, 155, 0.04), transparent 55%),
+    var(--paper);
+}
+
+.how-grid article {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0.01)), var(--paper-2);
+}
+
+.shop-footer {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(240, 85, 155, 0.12), transparent 26rem),
+    #070407;
+  border-top: 1px solid var(--line);
+}
+
+.shop-footer .brand-seal {
+  border-color: rgba(255, 145, 187, 0.22);
+  background: rgba(240, 85, 155, 0.12);
+  color: #ffc4dc;
+  box-shadow: none;
+}
+
+.shop-footer-bottom {
+  border-top-color: var(--line);
+}
+
+.floating-cart {
+  background: linear-gradient(135deg, #ff8fbd, #c73578);
+  border-color: rgba(255, 196, 218, 0.24);
+  color: #1a0712;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.46);
+}
+
+.floating-cart strong {
+  color: #3a0a20;
+}
+
+.floating-cart.has-items {
+  background: linear-gradient(135deg, #ff8fbd, #c73578);
+}
+
+.shop-overlay {
+  background: rgba(5, 2, 5, 0.62);
+}
+
+.product-modal,
+.auth-modal,
+.success-modal,
+.checkout-modal,
+.cart-drawer,
+.mobile-nav {
+  background: var(--paper-2);
+  border-color: var(--line);
+  box-shadow: 0 34px 100px rgba(0, 0, 0, 0.6);
+}
+
+.product-modal-close {
+  border-color: var(--line);
+  background: rgba(23, 15, 12, 0.92);
+  color: var(--ink);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.product-modal-media {
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 185, 212, 0.08), transparent 45%),
+    var(--blush-2);
+}
+
+.product-modal-media-note {
+  background: rgba(8, 5, 8, 0.9);
+  color: var(--ink-soft);
+  border-top: 1px solid var(--line);
+}
+
+.cart-line {
+  border-bottom-color: var(--line);
+}
+
+.cart-foot {
+  background: var(--paper-2);
+}
+
+.auth-tabs,
+.shop-segmented {
+  background: #0b0509;
+  border-color: var(--line-strong);
+  border-radius: 12px;
+}
+
+.auth-tabs button,
+.shop-segmented button {
+  border-radius: 9px;
+}
+
+.auth-tabs button.active,
+.shop-segmented button.active {
+  background: #fbeef4;
+  color: #1a0712;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+}
+
+.checkout-summary {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(240, 85, 155, 0.13), transparent 18rem),
+    var(--paper);
+}
+
+.checkout-line {
+  border-bottom-color: var(--line);
+}
+
+.success-mark {
+  background: var(--success);
+  color: #102318;
+  box-shadow: 0 0 0 10px rgba(139, 212, 169, 0.08);
+}
+
+.success-summary {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.shop-toast {
+  border-color: var(--line);
+  background: #fbeef4;
+  color: #1a0712;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.46);
+}
+
+.shop-toast button {
+  color: rgba(27, 7, 16, 0.6);
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #211712 25%, #33221a 37%, #211712 63%);
+  background-size: 400% 100%;
+}
+
+.shop-error {
+  border-color: rgba(255, 145, 153, 0.24);
+}
+
+.mobile-nav nav a,
+.mobile-nav nav button {
+  border-bottom-color: var(--line);
 }

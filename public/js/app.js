@@ -60,6 +60,29 @@ const BOOKING_LABELS = {
   completed: 'Completed',
   cancelled: 'Cancelled',
 };
+const DEPLOYMENT_STATUSES = ['unassigned', 'scheduled', 'dispatched', 'on_site', 'collected'];
+const DEPLOYMENT_LABELS = {
+  unassigned: 'Unassigned',
+  scheduled: 'Scheduled',
+  dispatched: 'Dispatched',
+  on_site: 'On site',
+  collected: 'Collected',
+};
+const BOOTH_UNIT_POOL = {
+  photobooth: { label: 'Photobooth', units: ['PB-1', 'PB-2', 'PB-3', 'PB-4', 'PB-5'] },
+  video: { label: 'Video booth', units: ['VB-1'] },
+  mirror: { label: 'Mirror booth', units: ['MB-1'] },
+  studio: { label: 'Studio booth', units: ['SB-1', 'SB-2'] },
+};
+const BOOTH_TYPE_BY_SERVICE = {
+  'photobooth-4r': 'photobooth',
+  'photobooth-4r-magnetic': 'photobooth',
+  'photobooth-strips': 'photobooth',
+  'photobooth-strips-magnetic': 'photobooth',
+  'booth-360': 'video',
+  'booth-mirror': 'mirror',
+  'booth-studio': 'studio',
+};
 const PAYMENT_LABELS = {
   unpaid: 'Unpaid',
   deposit_paid: 'Deposit paid',
@@ -82,6 +105,7 @@ const ICONS = {
   chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   camera: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v10H4z"/><circle cx="12" cy="13" r="3.2"/></svg>',
+  inventory: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v13H4z"/><path d="M8 4h8l2 3H6l2-3zM9 12h6M9 16h4"/></svg>',
   spark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>',
   mail: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
@@ -100,11 +124,14 @@ const NAV = {
   staff: [
     { key: 'overview', label: 'Studio day', icon: 'home' },
     { key: 'schedule', label: 'My schedule', icon: 'schedule' },
+    { key: 'calendar', label: 'Calendar', icon: 'calendar' },
     { key: 'account', label: 'Account & security', icon: 'staff' },
   ],
   admin: [
     { key: 'overview', label: 'Overview', icon: 'home' },
     { key: 'bookings', label: 'Bookings', icon: 'bookings' },
+    { key: 'calendar', label: 'Calendar', icon: 'calendar' },
+    { key: 'inventory', label: 'Inventory', icon: 'inventory' },
     { key: 'payments', label: 'Payments', icon: 'payments' },
     { key: 'discounts', label: 'Discounts', icon: 'spark' },
     { key: 'images', label: 'Product images', icon: 'camera' },
@@ -117,6 +144,8 @@ const NAV = {
   branch_admin: [
     { key: 'overview', label: 'Overview', icon: 'home' },
     { key: 'bookings', label: 'Bookings', icon: 'bookings' },
+    { key: 'calendar', label: 'Calendar', icon: 'calendar' },
+    { key: 'inventory', label: 'Inventory', icon: 'inventory' },
     { key: 'payments', label: 'Payments', icon: 'payments' },
     { key: 'images', label: 'Product images', icon: 'camera' },
     { key: 'team', label: 'Team', icon: 'staff' },
@@ -136,11 +165,14 @@ const PAGE_META = {
   staff: {
     overview: { title: 'Studio day', subtitle: 'Your assigned events and what needs a nudge.' },
     schedule: { title: 'My schedule', subtitle: 'Dates, crews, and the progress of each booking.' },
+    calendar: { title: 'Calendar', subtitle: 'Setup, event, and pickup work in your branch scope.' },
     account: { title: 'Account & security', subtitle: 'Your sign-in, password, and two-factor settings.' },
   },
   admin: {
     overview: { title: 'Studio overview', subtitle: 'The whole day, from requests to recorded payments.' },
     bookings: { title: 'Bookings', subtitle: 'Coordinate dates, crews, and service progress.' },
+    calendar: { title: 'Logistics calendar', subtitle: 'Setup, event, and pickup schedules with deployment status and assigned units.' },
+    inventory: { title: 'Inventory', subtitle: 'Physical booth units, maintenance blocks, and overlapping commitments.' },
     payments: { title: 'Payments', subtitle: 'Keep a clear record of deposits and balances.' },
     discounts: { title: 'Discounts', subtitle: 'Assign a loyalty or courtesy discount to a customer.' },
     images: { title: 'Product images', subtitle: 'The shared catalog photos customers see — upload, replace, or remove.' },
@@ -153,6 +185,8 @@ const PAGE_META = {
   branch_admin: {
     overview: { title: 'Branch overview', subtitle: 'Your branch, from requests to recorded payments.' },
     bookings: { title: 'Branch bookings', subtitle: 'Only the bookings routed to your branch.' },
+    calendar: { title: 'Branch logistics calendar', subtitle: 'Setup, event, and pickup schedules for your branch.' },
+    inventory: { title: 'Studio inventory', subtitle: 'Shared physical units, maintenance blocks, and upcoming booth deployments.' },
     payments: { title: 'Branch payments', subtitle: 'Deposits and balances for your branch.' },
     images: { title: 'Product images', subtitle: 'Manage the shared catalog photos for every product, at either branch.' },
     team: { title: 'Branch team', subtitle: 'Crew records available for this branch; they do not sign in.' },
@@ -207,6 +241,17 @@ const state = {
   pricingError: '',
   images: null,
   imagesError: '',
+  inventory: null,
+  inventoryError: '',
+  inventoryDate: todayISO(),
+  inventoryTime: '09:00',
+  inventoryHours: 3,
+  inventoryLoading: false,
+  calendar: null,
+  calendarError: '',
+  calendarMonth: todayISO().slice(0, 7),
+  calendarBranch: '',
+  calendarLoading: false,
   imageFilter: 'all',
   imageSearch: '',
   imageSelections: new Map(),
@@ -317,6 +362,13 @@ function getBooking(id) {
 function statusBadge(status, label = '') {
   const safe = String(status || '').replace(/[^a-z_]/g, '') || 'pending';
   return `<span class="status-badge status-${safe}">${esc(label || statusLabel(safe))}</span>`;
+}
+
+function deploymentBadge(status) {
+  const safe = DEPLOYMENT_STATUSES.includes(status) ? status : 'unassigned';
+  return `<span class="deployment-badge deployment-${safe.replace('_', '-')}">${esc(
+    DEPLOYMENT_LABELS[safe]
+  )}</span>`;
 }
 
 function itemSummary(item) {
@@ -553,6 +605,26 @@ async function navigate(view) {
     await loadReport();
     return;
   }
+  if (state.view === 'inventory' && !state.inventory && !state.inventoryError) {
+    renderView();
+    runViewTransition(direction);
+    await loadInventory();
+    return;
+  }
+  if (state.view === 'calendar') {
+    renderView();
+    runViewTransition(direction);
+    const bounds = calendarBounds(state.calendarMonth);
+    if (
+      !state.calendar ||
+      state.calendar.from !== bounds.from ||
+      state.calendar.to !== bounds.to ||
+      state.calendar.branch_id !== (state.calendarBranch || '')
+    ) {
+      await loadCalendar();
+    }
+    return;
+  }
   renderView();
   runViewTransition(direction);
   window.scrollTo(0, 0);
@@ -570,10 +642,13 @@ function renderView() {
     else renderCustomerOverview();
   } else if (role === 'staff') {
     if (state.view === 'schedule') renderStaffSchedule();
+    else if (state.view === 'calendar') renderCalendar();
     else if (state.view === 'account') renderAccount();
     else renderStaffOverview();
   } else if (isAdminRole(role)) {
     if (state.view === 'bookings') renderAdminBookings();
+    else if (state.view === 'calendar') renderCalendar();
+    else if (state.view === 'inventory') renderAdminInventory();
     else if (state.view === 'payments') renderAdminPayments();
     else if (state.view === 'discounts') renderAdminDiscounts();
     else if (state.view === 'images') renderAdminImages();
@@ -2693,7 +2768,9 @@ const PRECIOUS_SUGGESTIONS = {
     book: ['How much is a tarpaulin?', 'How many booth services can run at once?', 'How do I pay the reservation fee?'],
     bookings: ['What is my booking status?', 'How long until my pickup is ready?', 'Can I move my date?'],
     payments: ['How much is the reservation fee?', 'Which payment methods do you accept?', 'Can I move my date?'],
-    reports: ['How long does processing take?', 'How many services can run at once?', 'Where are your branches?'],
+    reports: ['How many booth units are available?', 'What is scheduled today?', 'How long does processing take?'],
+    inventory: ['How many booth units are available?', 'Which units are assigned to deployments?', 'What is scheduled today?'],
+    calendar: ['What is scheduled today?', 'Which units are assigned to deployments?', 'How many booth units are available?'],
     team: ['What are your opening hours?', 'Where are your branches?', 'How do I contact the studio?'],
     alerts: ['What is my booking status?', 'Can I move my date?', 'How do I contact the studio?'],
     schedule: ['What is my booking status?', 'How many services can run at once?', 'How long does processing take?'],
@@ -2705,7 +2782,9 @@ const PRECIOUS_SUGGESTIONS = {
     book: ['Magkano ang tarpaulin?', 'Ilang booth ang pwedeng sabay?', 'Paano magbayad ng reservation fee?'],
     bookings: ['Ano ang status ng booking ko?', 'Gaano katagal bago maging ready ang pickup?', 'Pwede bang ilipat ang date?'],
     payments: ['Magkano ang reservation fee?', 'Anong payment methods ang tinatanggap?', 'Pwede bang ilipat ang date?'],
-    reports: ['Gaano katagal ang processing?', 'Ilang serbisyo ang pwedeng sabay?', 'Saan ang mga branch?'],
+    reports: ['Ilan ang available na booth units?', 'Ano ang naka-schedule ngayon?', 'Gaano katagal ang processing?'],
+    inventory: ['Ilan ang available na booth units?', 'Anong units ang naka-assign?', 'Ano ang naka-schedule ngayon?'],
+    calendar: ['Ano ang naka-schedule ngayon?', 'Anong units ang naka-assign?', 'Ilan ang available na booth units?'],
     team: ['Saan ang mga branch?', 'Ano ang opening hours?', 'Paano makipag-ugnayan sa studio?'],
     alerts: ['Ano ang status ng booking ko?', 'Pwede bang ilipat ang date?', 'Paano makipag-ugnayan sa studio?'],
     schedule: ['Ano ang status ng booking ko?', 'Ilang serbisyo ang pwedeng sabay?', 'Gaano katagal ang processing?'],
@@ -3371,6 +3450,163 @@ function renderAdminPayments() {
           : '<div class="table-empty">No payments match this filter.</div>'
       }
       <div class="table-foot"><span>Only administrators can change a payment record.</span><span>Amounts in PHP</span></div>
+    </div>`;
+}
+
+/* ---------- Logistics calendar ---------- */
+
+function calendarBounds(month) {
+  const value = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : todayISO().slice(0, 7);
+  const [year, monthNumber] = value.split('-').map(Number);
+  const from = `${value}-01`;
+  const to = new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10);
+  return { from, to };
+}
+
+function shiftCalendarMonth(month, amount) {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const date = new Date(Date.UTC(year, monthNumber - 1 + amount, 1));
+  return date.toISOString().slice(0, 7);
+}
+
+async function loadCalendar() {
+  const month = state.calendarMonth;
+  const bounds = calendarBounds(month);
+  state.calendarLoading = true;
+  state.calendarError = '';
+  if (state.view === 'calendar') renderView();
+  const params = new URLSearchParams({ from: bounds.from, to: bounds.to });
+  if (state.user.role === 'admin' && state.calendarBranch) params.set('branch_id', state.calendarBranch);
+  try {
+    const data = await api(`/api/logistics?${params.toString()}`);
+    if (month !== state.calendarMonth) return;
+    state.calendar = data;
+  } catch (error) {
+    if (month !== state.calendarMonth) return;
+    state.calendarError = error.message;
+    state.calendar = null;
+  } finally {
+    if (month === state.calendarMonth) {
+      state.calendarLoading = false;
+      if (state.view === 'calendar') renderView();
+    }
+  }
+}
+
+function calendarEntryChip(entry) {
+  const units = entry.assigned_units || [];
+  const status = DEPLOYMENT_LABELS[entry.deployment_status] || 'Unassigned';
+  return `<button class="calendar-entry cal-${esc(entry.type)}" type="button" data-open-booking="${esc(
+    entry.booking_id
+  )}" title="${esc(
+    `${entry.customer} · ${entry.branch} · ${status}${units.length ? ` · ${units.join(', ')}` : ''}`
+  )}">
+    <span><strong>${esc(formatTime(entry.time) || 'TBC')}</strong> ${esc(entry.type_label)}</span>
+    <small>${esc(entry.ref)}${units.length ? ` · ${esc(units.join(', '))}` : ''}</small>
+  </button>`;
+}
+
+function renderCalendar() {
+  if (state.calendarError) {
+    viewRoot.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">${ICONS.calendar}</div>
+        <h3>Calendar could not load</h3>
+        <p>${esc(state.calendarError)}</p>
+        <div class="no-results-actions"><button class="btn btn-primary" type="button" data-calendar-retry>Try again</button></div>
+      </div>`;
+    return;
+  }
+  const bounds = calendarBounds(state.calendarMonth);
+  const data = state.calendar;
+  if (!data || data.from !== bounds.from || data.to !== bounds.to) {
+    viewRoot.innerHTML = '<div class="view-skeleton" role="status" aria-live="polite">Building the logistics calendar…</div>';
+    return;
+  }
+
+  const byDate = new Map();
+  for (const entry of data.entries || []) {
+    if (!byDate.has(entry.date)) byDate.set(entry.date, []);
+    byDate.get(entry.date).push(entry);
+  }
+  const firstDay = new Date(`${bounds.from}T00:00:00Z`).getUTCDay();
+  const daysInMonth = Number(bounds.to.slice(8, 10));
+  const cells = [
+    ...Array.from({ length: firstDay }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, index) => {
+      const day = String(index + 1).padStart(2, '0');
+      return { date: `${state.calendarMonth}-${day}`, number: day, entries: byDate.get(`${state.calendarMonth}-${day}`) || [] };
+    }),
+  ];
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const monthLabel = new Date(`${bounds.from}T00:00:00Z`).toLocaleDateString('en-PH', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+  const summary = data.summary || {};
+  const branches = data.branches || state.branches;
+
+  viewRoot.innerHTML = `
+    <div class="page-intro">
+      <div><h2>${esc(monthLabel)} at a glance.</h2><p>Each setup, event, and pickup is built from live booking records. Assigned units and deployment status travel with the booking.</p></div>
+      <div class="page-actions">
+        ${
+          state.user.role === 'admin'
+            ? `<select class="select" id="calendar-branch" aria-label="Filter calendar by branch">
+                <option value="">All branches</option>
+                ${branches
+                  .map(
+                    (branch) =>
+                      `<option value="${esc(branch.id)}" ${state.calendarBranch === branch.id ? 'selected' : ''}>${esc(branch.name)}</option>`
+                  )
+                  .join('')}
+              </select>`
+            : ''
+        }
+        <button class="btn" type="button" data-calendar-today>Today</button>
+        <button class="btn btn-sm" type="button" data-calendar-prev aria-label="Previous month">${ICONS.chevron}</button>
+        <button class="btn btn-sm" type="button" data-calendar-next aria-label="Next month">${ICONS.chevron}</button>
+      </div>
+    </div>
+    <div class="stats-strip calendar-stats">
+      <div class="stat-cell"><span>Bookings</span><strong>${summary.bookings || 0}</strong><small>With work in this month</small></div>
+      <div class="stat-cell"><span>Setups</span><strong>${summary.setups || 0}</strong><small>Scheduled setup calls</small></div>
+      <div class="stat-cell"><span>Events</span><strong>${summary.events || 0}</strong><small>Event windows</small></div>
+      <div class="stat-cell"><span>Pickups</span><strong>${summary.pickups || 0}</strong><small>Collections and pickups</small></div>
+      <div class="stat-cell"><span>Units committed</span><strong>${summary.assigned_units || 0}</strong><small>Distinct assigned units</small></div>
+    </div>
+    <div class="panel calendar-panel ${state.calendarLoading ? 'is-refreshing' : ''}">
+      <div class="calendar-toolbar">
+        <div class="calendar-legend">
+          <span class="cal-key cal-key-setup">Setup</span>
+          <span class="cal-key cal-key-event">Event</span>
+          <span class="cal-key cal-key-pickup">Pickup</span>
+          <span class="calendar-legend-note">${state.calendarLoading ? 'Refreshing live records…' : 'Live from bookings'}</span>
+        </div>
+        <span class="tiny muted">${esc(monthLabel)}</span>
+      </div>
+      <div class="calendar-weekdays" aria-hidden="true">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+        .map((day) => `<span>${day}</span>`)
+        .join('')}</div>
+      <div class="calendar-grid">
+        ${cells
+          .map((cell) => {
+            if (!cell) return '<div class="calendar-cell is-empty" aria-hidden="true"></div>';
+            const shown = cell.entries.slice(0, 3);
+            return `<div class="calendar-cell ${cell.date === todayISO() ? 'is-today' : ''}">
+              <div class="calendar-cell-head"><strong>${Number(cell.number)}</strong>${cell.date === todayISO() ? '<span>Today</span>' : ''}</div>
+              <div class="calendar-cell-entries">${shown.map(calendarEntryChip).join('')}${
+                cell.entries.length > shown.length
+                  ? `<span class="calendar-more">+${cell.entries.length - shown.length} more</span>`
+                  : ''
+              }</div>
+            </div>`;
+          })
+          .join('')}
+      </div>
+      <div class="table-foot"><span>Click any schedule item to open its booking.</span><span>Deployment: unassigned → scheduled → dispatched → on site → collected</span></div>
     </div>`;
 }
 
@@ -4143,6 +4379,8 @@ async function saveNewService(form) {
 
 const REPORT_SECTIONS = [
   { key: 'summary', label: 'Summary', note: 'Headline numbers', icon: 'reports' },
+  { key: 'trends', label: 'Trends', note: 'Real-data graphs', icon: 'reports' },
+  { key: 'logistics', label: 'Logistics', note: 'Deployments and schedules', icon: 'inventory' },
   { key: 'services', label: 'Services', note: 'Units and value', icon: 'bookings' },
   { key: 'payments', label: 'Payment mix', note: 'Amounts recorded', icon: 'payments' },
   { key: 'status', label: 'Status mix', note: 'Booking statuses', icon: 'check' },
@@ -4150,6 +4388,133 @@ const REPORT_SECTIONS = [
   { key: 'bookings', label: 'Bookings', note: 'Created in period', icon: 'calendar' },
   { key: 'cancellations', label: 'Cancellations', note: 'Reasons and filters', icon: 'spark' },
 ];
+
+function reportTrendChart(report) {
+  const trend = report.trend || [];
+  if (!trend.length) return '<p class="tiny muted">No weeks in this period.</p>';
+  const width = 860;
+  const height = 260;
+  const left = 54;
+  const right = 18;
+  const top = 18;
+  const bottom = 42;
+  const plotW = width - left - right;
+  const plotH = height - top - bottom;
+  const maxRevenue = Math.max(1, ...trend.map((row) => Number(row.revenue) || 0));
+  const maxBookings = Math.max(1, ...trend.map((row) => Number(row.bookings) || 0));
+  const slot = plotW / trend.length;
+  const barW = Math.max(3, Math.min(22, slot * 0.34));
+  const labelEvery = Math.max(1, Math.ceil(trend.length / 9));
+  const bookingLine = trend
+    .map((row, index) => {
+      const x = left + index * slot + slot / 2;
+      const y = top + plotH - (Number(row.bookings) / maxBookings) * plotH * 0.72;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+
+  return `
+    <div class="analytics-chart">
+      <div class="analytics-chart-legend">
+        <span><i class="chart-key chart-key-revenue"></i> Payments recorded</span>
+        <span><i class="chart-key chart-key-bookings"></i> Bookings created</span>
+      </div>
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Weekly payments and bookings from live records">
+        ${[0, 0.25, 0.5, 0.75, 1]
+          .map((step) => {
+            const y = top + plotH - step * plotH;
+            return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" class="chart-gridline" />`;
+          })
+          .join('')}
+        ${trend
+          .map((row, index) => {
+            const x = left + index * slot + slot / 2 - barW / 2;
+            const barH = (Number(row.revenue) / maxRevenue) * plotH;
+            const label =
+              index % labelEvery === 0 || index === trend.length - 1
+                ? `<text x="${x + barW / 2}" y="${height - 15}" text-anchor="middle" class="chart-label">${esc(
+                    row.week_start.slice(5)
+                  )}</text>`
+                : '';
+            return `<rect x="${x}" y="${top + plotH - barH}" width="${barW}" height="${barH}" rx="3" class="chart-revenue-bar"><title>${esc(
+              row.week_start
+            )}: ${peso(row.revenue)} · ${plural(row.bookings, 'booking')}</title></rect>${label}`;
+          })
+          .join('')}
+        <polyline points="${bookingLine}" class="chart-bookings-line" />
+        ${trend
+          .map((row, index) => {
+            const x = left + index * slot + slot / 2;
+            const y = top + plotH - (Number(row.bookings) / maxBookings) * plotH * 0.72;
+            return `<circle cx="${x}" cy="${y}" r="2.8" class="chart-bookings-dot"><title>${esc(
+              row.week_start
+            )}: ${plural(row.bookings, 'booking')}</title></circle>`;
+          })
+          .join('')}
+      </svg>
+      <div class="analytics-chart-foot"><span>Week starting</span><span>Peak week ${peso(maxRevenue)}</span></div>
+    </div>`;
+}
+
+function reportTrendSection(report) {
+  const logistics = report.logistics || {};
+  const branches = report.by_branch || [];
+  return `
+    <div class="report-summary">
+      <div class="report-stat"><span>Payments in period</span><strong>${peso(report.summary.revenue_collected)}</strong></div>
+      <div class="report-stat"><span>Average booking</span><strong>${peso(report.summary.average_booking)}</strong></div>
+      <div class="report-stat"><span>Events scheduled</span><strong>${logistics.events_in_period || 0}</strong></div>
+      <div class="report-stat"><span>Assigned deployments</span><strong>${logistics.assigned || 0}</strong></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><h3>Real-data trend</h3><p>Payments and bookings by week, built from live records</p></div></div>
+      <div class="panel-body">${reportTrendChart(report)}</div>
+    </div>
+    <div class="panel" style="margin-top:18px">
+      <div class="panel-head"><div><h3>Branch performance</h3><p>Bookings created in this period and their value</p></div></div>
+      <div class="panel-body">
+        ${branches.length ? `<table class="report-table"><thead><tr><th>Branch</th><th>Bookings</th><th>Completed</th><th>Value</th></tr></thead><tbody>${branches
+          .map(
+            (row) => `<tr><td>${esc(row.name)}</td><td>${row.bookings}</td><td>${row.completed}</td><td class="money">${peso(row.value)}</td></tr>`
+          )
+          .join('')}</tbody></table>` : '<p class="tiny muted">No bookings were created in this period.</p>'}
+      </div>
+    </div>`;
+}
+
+function reportLogisticsSection(report) {
+  const stats = report.logistics || {};
+  const max = Math.max(1, ...(report.by_deployment || []).map((row) => row.count));
+  const scheduled = (report.created_bookings || []).filter(
+    (row) => row.setup_date || row.pickup_schedule_date || (row.assigned_units || []).length
+  );
+  return `
+    <div class="report-summary">
+      <div class="report-stat"><span>Events in period</span><strong>${stats.events_in_period || 0}</strong></div>
+      <div class="report-stat"><span>With assigned units</span><strong>${stats.assigned || 0}</strong></div>
+      <div class="report-stat"><span>Unassigned deployments</span><strong>${stats.unassigned || 0}</strong></div>
+      <div class="report-stat"><span>Setup / pickup scheduled</span><strong>${stats.setups || 0} / ${stats.pickups || 0}</strong></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><h3>Deployment pipeline</h3><p>Events in the report period by physical deployment status</p></div></div>
+      <div class="panel-body">${reportBars(
+        report.by_deployment || [],
+        'count',
+        'label',
+        max
+      )}</div>
+    </div>
+    <div class="panel" style="margin-top:18px">
+      <div class="panel-head"><div><h3>Setups, pickups, and units</h3><p>Bookings created in the period with logistics recorded</p></div><span class="tiny muted">${plural(scheduled.length, 'record')}</span></div>
+      ${scheduled.length
+        ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Reference</th><th>Event</th><th>Deployment</th><th>Assigned units</th><th>Setup</th><th>Pickup</th></tr></thead><tbody>${scheduled
+            .map(
+              (row) => `<tr><td><span class="cell-main">${esc(row.ref)}</span><span class="cell-sub">${esc(row.branch)}</span></td><td>${formatDate(row.event_date, 'short')}</td><td>${deploymentBadge(row.deployment_status)}</td><td>${(row.assigned_units || []).length ? esc(row.assigned_units.join(', ')) : '—'}</td><td>${row.setup_date ? `${formatDate(row.setup_date, 'short')} ${esc(row.setup_time || '')}` : '—'}</td><td>${row.pickup_schedule_date ? `${formatDate(row.pickup_schedule_date, 'short')} ${esc(row.pickup_schedule_time || '')}` : '—'}</td></tr>`
+            )
+            .join('')}</tbody></table></div>`
+        : '<div class="table-empty">No assigned units or setup/pickup schedules in this period yet.</div>'}
+    </div>`;
+}
 
 function reportControlsTemplate(report) {
   return `
@@ -4173,6 +4538,9 @@ function reportControlsTemplate(report) {
 
 function reportSectionHtml(key, report, statusMax, methodMax) {
   if (!report) return '';
+
+  if (key === 'trends') return reportTrendSection(report);
+  if (key === 'logistics') return reportLogisticsSection(report);
 
   if (key === 'summary') {
     return `
@@ -4283,8 +4651,129 @@ function reportSectionHtml(key, report, statusMax, methodMax) {
   return '';
 }
 
+function exportReportPng() {
+  const report = state.report;
+  if (!report) {
+    toast('Generate a report before exporting it.', 'warning');
+    return;
+  }
+  const canvas = document.createElement('canvas');
+  const width = 1400;
+  const height = 1000;
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    toast('PNG export is not available in this browser.', 'error');
+    return;
+  }
+  ctx.fillStyle = '#fff8f4';
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = '#c72b5c';
+  ctx.font = '700 20px Georgia, serif';
+  ctx.fillText('PRECIOUS MOMENTS', 60, 66);
+  ctx.fillStyle = '#2a1420';
+  ctx.font = '400 34px Georgia, serif';
+  ctx.fillText('Operational report', 60, 112);
+  ctx.fillStyle = '#725e68';
+  ctx.font = '400 15px Arial, sans-serif';
+  ctx.fillText(`${report.period.from} to ${report.period.to} · generated from live records`, 60, 140);
+
+  const cards = [
+    ['Bookings', report.summary.bookings],
+    ['Completed', report.summary.completed],
+    ['Payments', peso(report.summary.revenue_collected)],
+    ['Outstanding', peso(report.summary.outstanding)],
+  ];
+  cards.forEach(([label, value], index) => {
+    const x = 60 + index * 325;
+    ctx.fillStyle = '#f8e9ee';
+    ctx.fillRect(x, 175, 295, 92);
+    ctx.fillStyle = '#725e68';
+    ctx.font = '700 12px Arial, sans-serif';
+    ctx.fillText(String(label).toUpperCase(), x + 18, 198);
+    ctx.fillStyle = '#2a1420';
+    ctx.font = '400 26px Georgia, serif';
+    ctx.fillText(String(value), x + 18, 242);
+  });
+
+  ctx.fillStyle = '#2a1420';
+  ctx.font = '700 18px Georgia, serif';
+  ctx.fillText('Payments and bookings by week', 60, 320);
+  const trend = report.trend || [];
+  const chartX = 60;
+  const chartY = 345;
+  const chartW = 1280;
+  const chartH = 245;
+  ctx.fillStyle = '#fbf2f4';
+  ctx.fillRect(chartX, chartY, chartW, chartH);
+  const maxRevenue = Math.max(1, ...trend.map((row) => Number(row.revenue) || 0));
+  const maxBookings = Math.max(1, ...trend.map((row) => Number(row.bookings) || 0));
+  const slot = trend.length ? chartW / trend.length : chartW;
+  trend.forEach((row, index) => {
+    const x = chartX + index * slot + Math.max(2, slot * 0.15);
+    const barWidth = Math.max(3, slot * 0.55);
+    const revenueHeight = (Number(row.revenue) / maxRevenue) * (chartH - 50);
+    const bookingHeight = (Number(row.bookings) / maxBookings) * (chartH - 50);
+    ctx.fillStyle = '#c72b5c';
+    ctx.fillRect(x, chartY + chartH - 25 - revenueHeight, barWidth / 2, revenueHeight);
+    ctx.fillStyle = '#e3a8ba';
+    ctx.fillRect(x + barWidth / 2 + 1, chartY + chartH - 25 - bookingHeight, barWidth / 2, bookingHeight);
+    if (index % Math.max(1, Math.ceil(trend.length / 10)) === 0 || index === trend.length - 1) {
+      ctx.fillStyle = '#725e68';
+      ctx.font = '12px Arial, sans-serif';
+      ctx.fillText(row.week_start.slice(5), x, chartY + chartH - 7);
+    }
+  });
+  ctx.fillStyle = '#725e68';
+  ctx.font = '13px Arial, sans-serif';
+  ctx.fillText('Payments (rose) and bookings (blush) per week', chartX + 16, chartY + 24);
+
+  const logistics = report.logistics || {};
+  const sections = [
+    ['LOGISTICS', `${logistics.events_in_period || 0} events · ${logistics.assigned || 0} with units · ${logistics.unassigned || 0} unassigned`],
+    ['SCHEDULE', `${logistics.setups || 0} setups · ${logistics.pickups || 0} pickups · ${logistics.units_committed || 0} units committed`],
+    ['DEPLOYMENT MIX', (report.by_deployment || []).map((row) => `${row.label}: ${row.count}`).join(' · ')],
+    ['BRANCHES', (report.by_branch || []).map((row) => `${row.name}: ${row.bookings} bookings`).join(' · ')],
+  ];
+  sections.forEach(([label, value], index) => {
+    const y = 660 + index * 62;
+    ctx.fillStyle = '#725e68';
+    ctx.font = '700 12px Arial, sans-serif';
+    ctx.fillText(label, 60, y);
+    ctx.fillStyle = '#2a1420';
+    ctx.font = '400 16px Arial, sans-serif';
+    const clipped = String(value);
+    ctx.fillText(clipped.length > 115 ? `${clipped.slice(0, 112)}…` : clipped, 60, y + 24);
+  });
+  ctx.strokeStyle = '#ead8de';
+  ctx.beginPath();
+  ctx.moveTo(60, 930);
+  ctx.lineTo(1340, 930);
+  ctx.stroke();
+  ctx.fillStyle = '#9b858f';
+  ctx.font = '12px Arial, sans-serif';
+  ctx.fillText('Precious Moments · CSV, PDF, and PNG exports all use this same live report.', 60, 958);
+
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      toast('Could not create the PNG export.', 'error');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `precious-moments-${report.period.from}-to-${report.period.to}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }, 'image/png');
+}
+
 function renderReports() {
   const csvHref = `/api/reports.csv?from=${encodeURIComponent(state.reportFrom)}&to=${encodeURIComponent(state.reportTo)}`;
+  const pdfHref = `/api/reports.pdf?from=${encodeURIComponent(state.reportFrom)}&to=${encodeURIComponent(state.reportTo)}`;
   const report = state.report;
   const statusMax = report ? Math.max(1, ...report.by_status.map((item) => item.count)) : 1;
   const methodMax = report ? Math.max(1, ...report.by_method.map((item) => item.amount)) : 1;
@@ -4304,7 +4793,9 @@ function renderReports() {
             ).join('')}
           </select>
         </div>
-        <a class="btn" href="${esc(csvHref)}" download>${ICONS.download} Download CSV</a>
+        <button class="btn" type="button" data-export-png ${state.report ? '' : 'disabled'}>${ICONS.download} PNG</button>
+        <a class="btn ${state.report ? '' : 'is-disabled'}" href="${esc(pdfHref)}" ${state.report ? '' : 'aria-disabled="true" tabindex="-1"'}>${ICONS.download} PDF</a>
+        <a class="btn" href="${esc(csvHref)}" download>${ICONS.download} CSV</a>
       </div>
     </div>
     <section class="report-content" aria-label="Report content">
@@ -4541,6 +5032,27 @@ function drawerTemplate(booking) {
           ? [['completed', 'Completed']]
           : [];
   const contact = booking.customer || {};
+  const itemBoothType = (item) =>
+    BOOTH_UNIT_POOL[item.booth_type] ? item.booth_type : BOOTH_TYPE_BY_SERVICE[item.service_id];
+  const logisticsTypes = [
+    ...new Set((booking.items || []).map(itemBoothType).filter((type) => BOOTH_UNIT_POOL[type])),
+  ];
+  const unitSelections = booking.assigned_units || [];
+  const unitGroups = logisticsTypes
+    .map(
+      (type) => `<div class="logistics-unit-group"><span>${esc(BOOTH_UNIT_POOL[type].label)}</span><div class="logistics-unit-options">${BOOTH_UNIT_POOL[type].units
+        .map(
+          (unit) => `<label class="logistics-unit ${unitSelections.includes(unit) ? 'is-selected' : ''}"><input type="checkbox" name="assigned_units" value="${esc(unit)}" ${unitSelections.includes(unit) ? 'checked' : ''} /><span>${esc(unit)}</span></label>`
+        )
+        .join('')}</div></div>`
+    )
+    .join('');
+  const requiredUnits = logisticsTypes.map((type) => {
+    const count = (booking.items || [])
+      .filter((item) => itemBoothType(item) === type)
+      .reduce((sum, item) => sum + Math.max(1, Number(item.qty) || 1), 0);
+    return `${count} ${BOOTH_UNIT_POOL[type].label.toLowerCase()}`;
+  });
 
   return `
     <div class="drawer-overlay">
@@ -4549,7 +5061,9 @@ function drawerTemplate(booking) {
           <div>
             <h2 id="drawer-title">${esc(booking.ref)}</h2>
             <p>${booking.booking_type === 'pickup' ? 'Pickup' : 'Event'} · ${formatDate(booking.event_date, 'weekday')} · ${esc(formatTime(booking.event_time) || 'Time to confirm')} · ${peso(booking.total)}</p>
-            <div>${statusBadge(booking.status)} ${statusBadge(booking.payment_status)}</div>
+            <div>${statusBadge(booking.status)} ${statusBadge(booking.payment_status)}${
+              role === 'customer' ? '' : ` ${deploymentBadge(booking.deployment_status)}`
+            }</div>
           </div>
           <button class="drawer-close" type="button" data-drawer-close aria-label="Close booking details">${ICONS.close}</button>
         </header>
@@ -4589,6 +5103,67 @@ function drawerTemplate(booking) {
             }
             <div class="drawer-total"><span>Booking total</span><strong>${peso(booking.total)}</strong></div>
           </section>
+
+          ${
+            role === 'customer'
+              ? ''
+              : `<section class="drawer-section" data-logistics-section>
+                  <h3>Logistics &amp; deployment</h3>
+                  ${adminLike
+                    ? `<form data-form-type="logistics" data-id="${esc(booking.id)}">
+                        <div class="drawer-form">
+                          <div class="field">
+                            <label for="logistics-status">Deployment status</label>
+                            <select class="select" id="logistics-status" name="deployment_status">
+                              ${optionsHtml(Object.entries(DEPLOYMENT_LABELS), booking.deployment_status || 'unassigned')}
+                            </select>
+                          </div>
+                          <div class="field">
+                            <label>Assigned branch</label>
+                            <input class="input" type="text" value="${esc(booking.branch?.name || 'Needs review')}" readonly />
+                          </div>
+                          ${
+                            logisticsTypes.length
+                              ? `<div class="field field-full"><label>Physical units <span class="field-hint">${esc(
+                                  requiredUnits.join(' · ')
+                                )} requested</span></label><div class="logistics-units">${unitGroups}</div><p class="form-note">Only units for the booth types in this booking can be selected. Overlapping bookings and maintenance blocks are refused.</p></div>`
+                              : '<p class="form-note field-full">This booking has no physical booth line, so no unit assignment is needed.</p>'
+                          }
+                          ${booking.booking_type === 'event'
+                            ? `<div class="field">
+                                <label for="logistics-setup-date">Setup date</label>
+                                <input class="input" id="logistics-setup-date" name="setup_date" type="date" value="${esc(booking.setup_date ? String(booking.setup_date).slice(0, 10) : '')}" />
+                              </div>
+                              <div class="field">
+                                <label for="logistics-setup-time">Setup time</label>
+                                <input class="input" id="logistics-setup-time" name="setup_time" type="time" value="${esc(booking.setup_time || '')}" />
+                              </div>
+                              <div class="field">
+                                <label for="logistics-pickup-date">Pickup schedule date</label>
+                                <input class="input" id="logistics-pickup-date" name="pickup_schedule_date" type="date" value="${esc(booking.pickup_schedule_date ? String(booking.pickup_schedule_date).slice(0, 10) : '')}" />
+                              </div>
+                              <div class="field">
+                                <label for="logistics-pickup-time">Pickup schedule time</label>
+                                <input class="input" id="logistics-pickup-time" name="pickup_schedule_time" type="time" value="${esc(booking.pickup_schedule_time || '')}" />
+                              </div>`
+                            : ''}
+                          <div class="field field-full">
+                            <label for="logistics-notes">Logistics notes <span class="field-hint">optional</span></label>
+                            <textarea class="textarea" id="logistics-notes" name="logistics_notes" maxlength="1000" placeholder="Gate access, crew lead, loading bay, unit condition…">${esc(booking.logistics_notes || '')}</textarea>
+                          </div>
+                          <div class="form-error field-full" data-drawer-error></div>
+                          <div class="drawer-form-actions"><button class="btn btn-primary" type="submit">Save logistics</button></div>
+                        </div>
+                      </form>`
+                    : `<div class="detail-grid">
+                        <div><span>Deployment</span><strong>${esc(DEPLOYMENT_LABELS[booking.deployment_status] || 'Unassigned')}</strong></div>
+                        <div><span>Assigned units</span><strong>${esc((booking.assigned_units || []).join(', ') || 'None yet')}</strong></div>
+                        <div><span>Setup</span><strong>${booking.setup_date ? `${formatDate(booking.setup_date, 'short')} ${esc(booking.setup_time || '')}` : 'Not scheduled'}</strong></div>
+                        <div><span>Pickup</span><strong>${booking.pickup_schedule_date ? `${formatDate(booking.pickup_schedule_date, 'short')} ${esc(booking.pickup_schedule_time || '')}` : 'Not scheduled'}</strong></div>
+                      </div>`}
+                  ${booking.logistics_notes ? `<div class="drawer-note"><span>Logistics notes</span><p>${esc(booking.logistics_notes)}</p></div>` : ''}
+                </section>`
+          }
 
           <section class="drawer-section" data-design-files-section>
             <h3>Design &amp; reference files</h3>
@@ -5030,6 +5605,17 @@ async function submitDrawerForm(form) {
   if (type === 'design') {
     endpoint += '/design';
     payload = { design_status: data.get('design_status') };
+  } else if (type === 'logistics') {
+    endpoint += '/logistics';
+    payload = {
+      deployment_status: data.get('deployment_status'),
+      assigned_units: data.getAll('assigned_units'),
+      setup_date: data.get('setup_date') || null,
+      setup_time: data.get('setup_time') || '',
+      pickup_schedule_date: data.get('pickup_schedule_date') || null,
+      pickup_schedule_time: data.get('pickup_schedule_time') || '',
+      logistics_notes: data.get('logistics_notes') || '',
+    };
   } else if (type === 'payment') {
     endpoint += '/payment';
     payload = {
@@ -5070,7 +5656,13 @@ async function submitDrawerForm(form) {
     const scroll = drawerRoot.querySelector('.drawer-body')?.scrollTop || 0;
     refreshAfterBooking(booking);
     renderDrawer(booking, scroll);
-    toast(type === 'payment' ? 'Payment record updated.' : 'Booking updated.');
+          toast(
+        type === 'payment'
+          ? 'Payment record updated.'
+          : type === 'logistics'
+            ? 'Deployment and schedule saved.'
+            : 'Booking updated.'
+      );
   } catch (error) {
     setError(error.message);
     if (button) {
@@ -5245,6 +5837,175 @@ async function confirmCancellation() {
   }
 }
 
+/* ---------- Physical booth inventory ---------- */
+
+const INVENTORY_KIND_LABELS = {
+  maintenance: 'Maintenance',
+  damaged: 'Damaged',
+  blocked: 'Manually blocked',
+};
+
+async function loadInventory() {
+  state.inventoryLoading = true;
+  state.inventoryError = '';
+  renderView();
+  try {
+    const query = new URLSearchParams({
+      date: state.inventoryDate,
+      time: state.inventoryTime,
+      hours: String(state.inventoryHours),
+    });
+    state.inventory = await api(`/api/inventory?${query.toString()}`);
+  } catch (error) {
+    state.inventoryError = error.message;
+  } finally {
+    state.inventoryLoading = false;
+    renderView();
+  }
+}
+
+function inventoryWindowLabel(inventory) {
+  if (!inventory?.window) return '';
+  return `${formatDate(inventory.window.date, 'weekday')} · ${formatTime(inventory.window.time)} · ${plural(
+    Number(inventory.window.hours) || 1,
+    'hour'
+  )}`;
+}
+
+function inventoryTypeCard(row) {
+  const used = Number(row.used) || 0;
+  const total = Number(row.total) || 1;
+  const percent = Math.min(100, Math.round((used / total) * 100));
+  return `
+    <article class="inventory-card ${row.available ? '' : 'inventory-card--tight'}">
+      <div class="inventory-card-head">
+        <div><span class="inventory-type">${esc(row.label)}</span><strong>${row.available}<small> / ${row.total} available</small></strong></div>
+        <span class="inventory-state ${row.available ? 'is-open' : 'is-full'}">${row.available ? 'Bookable' : 'Fully booked'}</span>
+      </div>
+      <div class="inventory-meter" role="img" aria-label="${used} of ${total} units committed"><span style="width:${percent}%"></span></div>
+      <div class="inventory-breakdown">
+        <span><strong>${row.reserved}</strong> reserved</span>
+        <span><strong>${row.deployed}</strong> deployed</span>
+        <span><strong>${row.maintenance + row.blocked}</strong> maintenance</span>
+        <span><strong>${row.available}</strong> open</span>
+      </div>
+      <p class="inventory-unit-labels">${(row.unit_labels || []).map((label) => `<span>${esc(label)}</span>`).join('')}</p>
+    </article>`;
+}
+
+function inventoryDeploymentRow(booking) {
+  const date = dateParts(booking.event_date);
+  return `
+    <article class="inventory-deployment">
+      <div class="inventory-deployment-date"><strong>${date.day}</strong><span>${date.month}</span></div>
+      <div class="inventory-deployment-copy">
+        <div class="inventory-deployment-top"><strong>${esc(booking.ref)} · ${esc(booking.customer)}</strong>${statusBadge(booking.status)}</div>
+        <span>${esc(booking.venue)} · ${esc(booking.branch)}</span>
+        <div class="inventory-deployment-meta"><span>${esc(formatTime(booking.event_time))} · ${plural(Number(booking.duration_hours) || 1, 'hour')}</span>${booking.booths
+          .map((booth) => `<span class="inventory-booth-chip">${esc(booth.label)} · ${booth.units}</span>`)
+          .join('')}</div>
+      </div>
+      <button class="btn btn-sm" type="button" data-open-booking="${esc(booking.id)}">Open ${ICONS.chevron}</button>
+    </article>`;
+}
+
+function inventoryBlockRow(block, canManage) {
+  return `
+    <div class="inventory-block-row">
+      <div>
+        <strong>${esc(block.unit_label)} · ${esc(block.booth_label)}</strong>
+        <span>${esc(INVENTORY_KIND_LABELS[block.kind] || block.kind)} · ${esc(formatDate(block.start_date, 'weekday'))} ${esc(formatTime(block.start_time))} – ${esc(formatDate(block.end_date, 'weekday'))} ${esc(formatTime(block.end_time))}</span>
+        ${block.reason ? `<small>${esc(block.reason)}</small>` : ''}
+      </div>
+      ${canManage ? `<button class="btn btn-sm" type="button" data-release-block="${esc(block.id)}">Release</button>` : ''}
+    </div>`;
+}
+
+function renderAdminInventory() {
+  if (state.inventoryError) {
+    viewRoot.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">${ICONS.inventory}</div>
+        <h3>Inventory could not load</h3>
+        <p>${esc(state.inventoryError)}</p>
+        <div class="no-results-actions"><button class="btn btn-primary" type="button" data-inventory-retry>Try again</button></div>
+      </div>`;
+    return;
+  }
+  if (!state.inventory) {
+    viewRoot.innerHTML = '<div class="view-skeleton" role="status" aria-live="polite">Checking the physical booth floor…</div>';
+    return;
+  }
+
+  const data = state.inventory.inventory || {};
+  const types = data.types || [];
+  const totals = data.totals || {};
+  const upcoming = data.upcoming || [];
+  const blocks = data.blocks || [];
+  const canManage = state.user.role === 'admin';
+  const unitOptions = types
+    .map(
+      (row) => `<optgroup label="${esc(row.label)}">${(row.unit_labels || [])
+        .map((label) => `<option value="${esc(label)}" data-unit-type="${esc(row.type)}">${esc(label)} · ${esc(row.label)}</option>`)
+        .join('')}</optgroup>`
+    )
+    .join('');
+
+  viewRoot.innerHTML = `
+    <div class="page-intro">
+      <div><h2>Every booth, one floor plan.</h2><p>Physical units are shared studio-wide. A request only passes when its event window fits both the branch capacity and the actual booth type.</p></div>
+      <div class="page-actions"><button class="btn" type="button" data-inventory-refresh>${ICONS.refresh} Refresh</button></div>
+    </div>
+    <div class="stats-strip inventory-stats">
+      <div class="stat-cell"><span>Total units</span><strong>${totals.units || 0}</strong><small>Photobooth 5 · Video 1 · Mirror 1 · Studio 2</small></div>
+      <div class="stat-cell"><span>Available</span><strong class="${totals.available ? 'rose' : ''}">${totals.available || 0}</strong><small>Open in this window</small></div>
+      <div class="stat-cell"><span>Reserved</span><strong>${totals.reserved || 0}</strong><small>Pending requests holding a unit</small></div>
+      <div class="stat-cell"><span>Deployed</span><strong>${totals.deployed || 0}</strong><small>Confirmed or in progress</small></div>
+      <div class="stat-cell"><span>Maintenance</span><strong>${totals.maintenance || 0}</strong><small>Damaged or under repair</small></div>
+      <div class="stat-cell"><span>Blocked</span><strong>${totals.blocked || 0}</strong><small>Manually held units</small></div>
+    </div>
+
+    <form class="panel inventory-window" id="inventory-window-form">
+      <div class="inventory-window-head"><div><h3>Window to inspect</h3><p>${esc(inventoryWindowLabel(data))}</p></div><span class="tiny muted">${state.inventoryLoading ? 'Refreshing…' : 'Live from bookings and blocks'}</span></div>
+      <div class="inventory-window-fields">
+        <label class="field"><span>Date</span><input class="input" id="inventory-date" type="date" value="${esc(state.inventoryDate)}" required /></label>
+        <label class="field"><span>Start</span><input class="input" id="inventory-time" type="time" value="${esc(state.inventoryTime)}" required /></label>
+        <label class="field"><span>Hours</span><input class="input" id="inventory-hours" type="number" min="1" max="12" step="0.5" value="${esc(state.inventoryHours)}" required /></label>
+        <button class="btn btn-primary" type="submit">Check window</button>
+      </div>
+    </form>
+
+    <div class="inventory-grid">${types.map(inventoryTypeCard).join('')}</div>
+
+    <div class="two-col inventory-lower">
+      <div class="panel">
+        <div class="panel-head"><div><h3>Upcoming booth deployments</h3><p>Reservations from this date onward, with the physical pool they need</p></div><span class="tiny muted">${plural(upcoming.length, 'deployment')}</span></div>
+        ${upcoming.length ? `<div class="inventory-deployments">${upcoming.map(inventoryDeploymentRow).join('')}</div>` : emptyState({ icon: 'calendar', title: 'No booth deployments yet', text: 'Upcoming event bookings that include a physical booth will appear here.' })}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><div><h3>Maintenance & blocked units</h3><p>A block removes that unit from every booking check in its window.</p></div></div>
+        ${state.inventory.blocks_available === false ? `<div class="form-error show" role="alert">${esc(state.inventory.warning || 'Maintenance blocks are not available yet.')} Run <code>supabase/migrate-inventory.sql</code> to enable them.</div>` : ''}
+        ${canManage ? `
+          <form class="inventory-block-form" id="inventory-block-form">
+            <div class="inventory-block-grid">
+              <label class="field"><span>Booth type</span><select class="select" name="booth_type" id="inventory-block-type" required>${types.map((row) => `<option value="${esc(row.type)}">${esc(row.label)}</option>`).join('')}</select></label>
+              <label class="field"><span>Unit</span><select class="select" name="unit_label" id="inventory-block-unit" required>${unitOptions}</select></label>
+              <label class="field"><span>Reason</span><select class="select" name="kind" required><option value="maintenance">Maintenance</option><option value="damaged">Damaged</option><option value="blocked">Manually blocked</option></select></label>
+              <label class="field"><span>Start date</span><input class="input" name="start_date" type="date" value="${esc(state.inventoryDate)}" required /></label>
+              <label class="field"><span>Start time</span><input class="input" name="start_time" type="time" value="09:00" required /></label>
+              <label class="field"><span>End date</span><input class="input" name="end_date" type="date" value="${esc(state.inventoryDate)}" required /></label>
+              <label class="field"><span>End time</span><input class="input" name="end_time" type="time" value="12:00" required /></label>
+              <label class="field inventory-block-reason"><span>Note <small>optional</small></span><input class="input" name="reason" maxlength="300" placeholder="e.g. bulb replacement" /></label>
+            </div>
+            <div class="form-error" data-inventory-form-error role="alert"></div>
+            <button class="btn btn-primary" type="submit">Block this unit</button>
+          </form>` : `<p class="tiny muted inventory-readonly-note">Branch heads can view the shared floor and upcoming deployments. Only the studio owner can add or release maintenance blocks.</p>`}
+        <div class="inventory-block-list">${blocks.length ? blocks.map((block) => inventoryBlockRow(block, canManage)).join('') : '<p class="tiny muted">No units are blocked from this date onward.</p>'}</div>
+      </div>
+    </div>`;
+}
+
 /* ---------- Event handling ---------- */
 
 document.addEventListener('click', async (event) => {
@@ -5293,6 +6054,65 @@ document.addEventListener('click', async (event) => {
       renderView();
     } catch (error) {
       toast(error.message, 'error');
+    }
+    return;
+  }
+
+  if (target.closest('[data-inventory-retry]')) {
+    state.inventory = null;
+    state.inventoryError = '';
+    loadInventory();
+    return;
+  }
+  if (target.closest('[data-inventory-refresh]')) {
+    target.closest('[data-inventory-refresh]').disabled = true;
+    loadInventory();
+    return;
+  }
+  if (target.closest('[data-export-png]')) {
+    exportReportPng();
+    return;
+  }
+  if (target.closest('[data-calendar-retry]')) {
+    state.calendarError = '';
+    state.calendar = null;
+    loadCalendar();
+    return;
+  }
+  if (target.closest('[data-calendar-prev]')) {
+    state.calendarMonth = shiftCalendarMonth(state.calendarMonth, -1);
+    state.calendar = null;
+    loadCalendar();
+    return;
+  }
+  if (target.closest('[data-calendar-next]')) {
+    state.calendarMonth = shiftCalendarMonth(state.calendarMonth, 1);
+    state.calendar = null;
+    loadCalendar();
+    return;
+  }
+  if (target.closest('[data-calendar-today]')) {
+    state.calendarMonth = todayISO().slice(0, 7);
+    state.calendar = null;
+    loadCalendar();
+    return;
+  }
+  const releaseBlock = target.closest('[data-release-block]');
+  if (releaseBlock) {
+    if (!window.confirm('Release this inventory block? The unit will become bookable again for its window.')) {
+      return;
+    }
+    releaseBlock.disabled = true;
+    try {
+      await api(`/api/inventory/blocks/${encodeURIComponent(releaseBlock.dataset.releaseBlock)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: false }),
+      });
+      toast('Inventory block released.');
+      await loadInventory();
+    } catch (error) {
+      toast(error.message, 'error');
+      releaseBlock.disabled = false;
     }
     return;
   }
@@ -5806,6 +6626,15 @@ document.addEventListener('change', (event) => {
     return;
   }
 
+  if (target.matches('#inventory-block-type')) {
+    const unit = document.getElementById('inventory-block-unit');
+    if (!unit) return;
+    const options = [...unit.options].filter((option) => option.dataset.unitType === target.value);
+    for (const option of unit.options) option.hidden = option.dataset.unitType !== target.value;
+    if (options[0]) unit.value = options[0].value;
+    return;
+  }
+
   if (target.matches('#report-section')) {
     const fromInput = document.getElementById('report-from');
     const toInput = document.getElementById('report-to');
@@ -5813,6 +6642,13 @@ document.addEventListener('change', (event) => {
     if (toInput?.value) state.reportTo = toInput.value;
     state.reportSection = target.value;
     renderView();
+    return;
+  }
+
+  if (target.matches('#calendar-branch')) {
+    state.calendarBranch = target.value;
+    state.calendar = null;
+    loadCalendar();
     return;
   }
 
@@ -5920,6 +6756,47 @@ document.addEventListener('focusout', (event) => {
 
 document.addEventListener('submit', async (event) => {
   const form = event.target;
+  if (form.id === 'inventory-window-form') {
+    event.preventDefault();
+    state.inventoryDate = document.getElementById('inventory-date')?.value || todayISO();
+    state.inventoryTime = document.getElementById('inventory-time')?.value || '09:00';
+    state.inventoryHours = Number(document.getElementById('inventory-hours')?.value) || 3;
+    await loadInventory();
+    return;
+  }
+  if (form.id === 'inventory-block-form') {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = form.querySelector('[data-inventory-form-error]');
+    const data = new FormData(form);
+    errorBox.textContent = '';
+    errorBox.classList.remove('show');
+    button.disabled = true;
+    button.textContent = 'Blocking…';
+    try {
+      await api('/api/inventory/blocks', {
+        method: 'POST',
+        body: JSON.stringify({
+          booth_type: data.get('booth_type'),
+          unit_label: data.get('unit_label'),
+          kind: data.get('kind'),
+          start_date: data.get('start_date'),
+          start_time: data.get('start_time'),
+          end_date: data.get('end_date'),
+          end_time: data.get('end_time'),
+          reason: data.get('reason'),
+        }),
+      });
+      toast('Unit blocked from new bookings.');
+      await loadInventory();
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('show');
+      button.disabled = false;
+      button.textContent = 'Block this unit';
+    }
+    return;
+  }
   if (form.id === 'booking-form') {
     event.preventDefault();
     await submitBooking(form);

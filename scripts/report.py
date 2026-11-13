@@ -84,14 +84,15 @@ def parse_args():
     return start.isoformat(), end.isoformat()
 
 
-def build(bookings, users, start, end):
+def build(bookings, users, branches, start, end):
     """Aggregate bookings for the CSV; mirrors server/reports.js."""
     user_map = {user["id"]: user for user in users}
+    branch_map = {branch["id"]: branch for branch in branches}
     created = [b for b in bookings if in_range(b.get("created_at"), start, end)]
     by_status = {status: 0 for status in STATUSES}
     by_service, by_method = {}, {}
 
-    for booking in bookings:
+    for booking in created:
         status = booking.get("status")
         by_status[status] = by_status.get(status, 0) + 1
 
@@ -156,6 +157,7 @@ def build(bookings, users, start, end):
             else 0,
         },
         "user_map": user_map,
+        "branch_map": branch_map,
     }
 
 
@@ -181,17 +183,47 @@ def write_csv(path, report, start, end):
         ["Outstanding balance", summary["outstanding"]],
         ["Average booking", summary["average_booking"]],
         [],
-        ["Reference", "Event date", "Customer", "Status", "Payment status", "Total", "Paid", "Items"],
+        [
+            "Reference",
+            "Event date",
+            "Customer",
+            "Branch",
+            "Status",
+            "Payment status",
+            "Deployment status",
+            "Assigned units",
+            "Setup",
+            "Pickup schedule",
+            "Total",
+            "Paid",
+            "Items",
+        ],
     ]
     for booking in report["created"]:
         customer = report["user_map"].get(booking.get("customer_id"), {})
+        branch = report["branch_map"].get(booking.get("branch_id"), {})
+        units = booking.get("assigned_units") or []
+        if isinstance(units, str):
+            try:
+                units = json.loads(units)
+            except json.JSONDecodeError:
+                units = []
         lines.append(
             [
                 booking.get("ref", ""),
                 booking.get("event_date", ""),
                 customer.get("name", "Customer"),
+                branch.get("name") or "Needs review",
                 booking.get("status", ""),
                 booking.get("payment_status", ""),
+                booking.get("deployment_status") or "unassigned",
+                "; ".join(str(unit) for unit in units),
+                " ".join(part for part in [booking.get("setup_date"), booking.get("setup_time")] if part),
+                " ".join(
+                    part
+                    for part in [booking.get("pickup_schedule_date"), booking.get("pickup_schedule_time")]
+                    if part
+                ),
                 round(to_number(booking.get("total"))),
                 round(to_number(booking.get("amount_paid"))),
                 "; ".join(item.get("name", "") for item in booking.get("items") or []),
@@ -214,7 +246,8 @@ def main():
     start, end = parse_args()
     bookings = fetch("pm_bookings", base_url, key)
     users = fetch("pm_users", base_url, key)
-    report = build(bookings, users, start, end)
+    branches = fetch("pm_branches", base_url, key)
+    report = build(bookings, users, branches, start, end)
 
     output_dir = Path("reports")
     output_dir.mkdir(exist_ok=True)

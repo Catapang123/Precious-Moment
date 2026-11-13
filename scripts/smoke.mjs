@@ -642,7 +642,9 @@ try {
   assert.equal(availability.body.availability.full, true);
   assert.equal(availability.body.availability.capacity, 5);
   assert.equal(availability.body.availability.next_label, '12:00 PM');
-  pass('availability reports the full window and the next open start');
+  assert.equal(Object.keys(availability.body.booth_availability.types).length, 4);
+  assert.ok(availability.body.booth_availability.window);
+  pass('availability reports the full window, next open start, and physical booth state');
 
   // ---- Admin, crew records and studio accounts
   const badLogin = await session()('/api/auth/login', {
@@ -660,6 +662,491 @@ try {
   assert.equal(adminLogin.status, 200);
   assert.equal(adminLogin.body.user.role, 'admin');
   pass('admin demo login works');
+
+  // ---- Physical booth inventory: per-type limits, release, and blocks
+  const videoDate = futureDate(260);
+  const firstVideo = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: videoDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Video inventory venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-360', qty: 1 }],
+    }),
+  });
+  assert.equal(firstVideo.status, 201, firstVideo.body.error);
+  const secondVideo = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: videoDate,
+      event_time: '10:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Second video inventory venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-360', qty: 1 }],
+    }),
+  });
+  assert.equal(secondVideo.status, 409);
+  assert.match(secondVideo.body.error, /Video booth|physical unit/i);
+  pass('the single Video Booth cannot be booked twice in an overlapping window');
+
+  const cancelVideo = await customer(`/api/bookings/${firstVideo.body.booking.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ action: 'cancel', reason: 'change_of_plans' }),
+  });
+  assert.equal(cancelVideo.status, 200);
+  const videoAfterCancel = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: videoDate,
+      event_time: '10:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Video after cancellation',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-360', qty: 1 }],
+    }),
+  });
+  assert.equal(videoAfterCancel.status, 201, videoAfterCancel.body.error);
+  const confirmedVideo = await admin(`/api/bookings/${videoAfterCancel.body.booking.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'confirmed' }),
+  });
+  assert.equal(confirmedVideo.status, 200);
+  const confirmedInventory = await admin(`/api/inventory?date=${videoDate}&time=10:00&hours=2`);
+  assert.equal(confirmedInventory.status, 200);
+  assert.equal(
+    confirmedInventory.body.inventory.types.find((row) => row.type === 'video').deployed,
+    1
+  );
+  const videoWhileConfirmed = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: videoDate,
+      event_time: '10:30',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Video while confirmed',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-360', qty: 1 }],
+    }),
+  });
+  assert.equal(videoWhileConfirmed.status, 409);
+  pass('cancelling releases a unit and confirmed bookings still count as deployed');
+
+  const moveTargetDate = futureDate(268);
+  const moveSourceDate = futureDate(269);
+  const targetVideo = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: moveTargetDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Video move target',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-360', qty: 1 }],
+    }),
+  });
+  assert.equal(targetVideo.status, 201, targetVideo.body.error);
+  const sourceVideo = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: moveSourceDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Video move source',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-360', qty: 1 }],
+    }),
+  });
+  assert.equal(sourceVideo.status, 201, sourceVideo.body.error);
+  const moveIntoCommitted = await admin(`/api/bookings/${sourceVideo.body.booking.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ event_date: moveTargetDate }),
+  });
+  assert.equal(moveIntoCommitted.status, 409);
+  pass('editing a booking into an occupied physical booth window is refused');
+
+  const mirrorDate = futureDate(261);
+  const firstMirror = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: mirrorDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Mirror inventory venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-mirror', qty: 1 }],
+    }),
+  });
+  assert.equal(firstMirror.status, 201, firstMirror.body.error);
+  const secondMirror = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: mirrorDate,
+      event_time: '10:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Overlapping mirror venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-mirror', qty: 1 }],
+    }),
+  });
+  assert.equal(secondMirror.status, 409);
+  assert.match(secondMirror.body.error, /Mirror booth|physical unit/i);
+  pass('the single Mirror Booth refuses a second overlapping booking');
+
+  const studioDate = futureDate(262);
+  const studioBookings = [];
+  for (let index = 0; index < 2; index += 1) {
+    const created = await customer('/api/bookings', {
+      method: 'POST',
+      body: JSON.stringify({
+        booking_type: 'event',
+        event_date: studioDate,
+        event_time: '09:00',
+        duration_hours: 2,
+        branch_id: 'branch-batangas',
+        venue: `Studio inventory venue ${index + 1}`,
+        address: 'P. Burgos Street, Batangas City, Batangas',
+        items: [{ service_id: 'booth-studio', qty: 1 }],
+      }),
+    });
+    assert.equal(created.status, 201, created.body.error);
+    studioBookings.push(created.body.booking);
+  }
+  const thirdStudio = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: studioDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Third studio inventory venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-studio', qty: 1 }],
+    }),
+  });
+  assert.equal(thirdStudio.status, 409);
+  assert.match(thirdStudio.body.error, /Studio booth|physical unit/i);
+  pass('the two Studio Booth units allow exactly two overlapping bookings');
+
+  const photoboothDate = futureDate(266);
+  for (let index = 0; index < 5; index += 1) {
+    const created = await customer('/api/bookings', {
+      method: 'POST',
+      body: JSON.stringify({
+        booking_type: 'event',
+        event_date: photoboothDate,
+        event_time: '09:00',
+        duration_hours: 2,
+        branch_id: 'branch-batangas',
+        venue: `Photobooth inventory venue ${index + 1}`,
+        address: 'P. Burgos Street, Batangas City, Batangas',
+        items: [{ service_id: 'photobooth-4r', qty: 1 }],
+      }),
+    });
+    assert.equal(created.status, 201, created.body.error);
+  }
+  const sixthPhotobooth = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: photoboothDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Sixth photobooth inventory venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'photobooth-4r', qty: 1 }],
+    }),
+  });
+  assert.equal(sixthPhotobooth.status, 409);
+  pass('five Photobooth units can overlap and the sixth is refused');
+
+  const raceBoothDate = futureDate(264);
+  const boothRace = await Promise.all(
+    Array.from({ length: 2 }, (_, index) =>
+      customer('/api/bookings', {
+        method: 'POST',
+        body: JSON.stringify({
+          booking_type: 'event',
+          event_date: raceBoothDate,
+          event_time: '09:00',
+          duration_hours: 2,
+          branch_id: 'branch-batangas',
+          venue: `Video booth race ${index + 1}`,
+          address: 'P. Burgos Street, Batangas City, Batangas',
+          items: [{ service_id: 'booth-360', qty: 1 }],
+        }),
+      })
+    )
+  );
+  assert.equal(boothRace.filter((result) => result.status === 201).length, 1);
+  assert.equal(boothRace.filter((result) => result.status === 409).length, 1);
+  pass('simultaneous bookings cannot double-reserve the single Video Booth');
+
+  const blockDate = futureDate(263);
+  const inventoryBlock = await admin('/api/inventory/blocks', {
+    method: 'POST',
+    body: JSON.stringify({
+      booth_type: 'mirror',
+      unit_label: 'MB-1',
+      kind: 'maintenance',
+      start_date: blockDate,
+      start_time: '09:00',
+      end_date: blockDate,
+      end_time: '12:00',
+      reason: 'Mirror calibration',
+    }),
+  });
+  assert.equal(inventoryBlock.status, 201, inventoryBlock.body.error);
+  const blockedMirror = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: blockDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Blocked mirror venue',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-mirror', qty: 1 }],
+    }),
+  });
+  assert.equal(blockedMirror.status, 409);
+  assert.match(blockedMirror.body.error, /Mirror booth|physical unit/i);
+  const outsideBlock = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: blockDate,
+      event_time: '12:30',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Mirror after maintenance',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-mirror', qty: 1 }],
+    }),
+  });
+  assert.equal(outsideBlock.status, 201, outsideBlock.body.error);
+  const inventoryView = await admin(`/api/inventory?date=${blockDate}&time=09:00&hours=3`);
+  assert.equal(inventoryView.status, 200);
+  assert.equal(inventoryView.body.inventory.totals.units, 9);
+  const mirrorInventory = inventoryView.body.inventory.types.find((row) => row.type === 'mirror');
+  assert.equal(mirrorInventory.total, 1);
+  assert.equal(mirrorInventory.maintenance, 1);
+  assert.equal(mirrorInventory.available, 0);
+  assert.ok(inventoryView.body.inventory.blocks.some((block) => block.unit_label === 'MB-1'));
+  const badBlockUnit = await admin('/api/inventory/blocks', {
+    method: 'POST',
+    body: JSON.stringify({
+      booth_type: 'video',
+      unit_label: 'MB-1',
+      kind: 'maintenance',
+      start_date: blockDate,
+      start_time: '09:00',
+      end_date: blockDate,
+      end_time: '10:00',
+    }),
+  });
+  assert.equal(badBlockUnit.status, 400);
+  const releasedBlock = await admin(`/api/inventory/blocks/${inventoryBlock.body.block.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ active: false }),
+  });
+  assert.equal(releasedBlock.status, 200);
+  const mirrorAfterRelease = await customer('/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_type: 'event',
+      event_date: blockDate,
+      event_time: '09:00',
+      duration_hours: 2,
+      branch_id: 'branch-batangas',
+      venue: 'Mirror after release',
+      address: 'P. Burgos Street, Batangas City, Batangas',
+      items: [{ service_id: 'booth-mirror', qty: 1 }],
+    }),
+  });
+  assert.equal(mirrorAfterRelease.status, 201, mirrorAfterRelease.body.error);
+  pass('maintenance blocks remove a unit, show on the inventory dashboard, and release safely');
+
+  const blockRaceDate = futureDate(267);
+  const blockRace = await Promise.all(
+    Array.from({ length: 2 }, () =>
+      admin('/api/inventory/blocks', {
+        method: 'POST',
+        body: JSON.stringify({
+          booth_type: 'mirror',
+          unit_label: 'MB-1',
+          kind: 'maintenance',
+          start_date: blockRaceDate,
+          start_time: '09:00',
+          end_date: blockRaceDate,
+          end_time: '12:00',
+          reason: 'Parallel block test',
+        }),
+      })
+    )
+  );
+  assert.equal(blockRace.filter((result) => result.status === 201).length, 1);
+  assert.equal(blockRace.filter((result) => result.status === 409).length, 1);
+  const createdRaceBlock = blockRace.find((result) => result.status === 201).body.block;
+  const releaseRaceBlock = await admin(`/api/inventory/blocks/${createdRaceBlock.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ active: false }),
+  });
+  assert.equal(releaseRaceBlock.status, 200);
+  pass('parallel maintenance blocks cannot double-block the same physical unit');
+
+  // ---- Logistics: deployment status, physical units, setup/pickup schedules
+  const logisticsBooking = videoAfterCancel.body.booking;
+  const wrongLogisticsUnit = await admin(`/api/bookings/${logisticsBooking.id}/logistics`, {
+    method: 'PATCH',
+    body: JSON.stringify({ assigned_units: ['MB-1'] }),
+  });
+  assert.equal(wrongLogisticsUnit.status, 409);
+  assert.match(wrongLogisticsUnit.body.error, /Mirror booth|does not request/i);
+
+  const scheduledLogistics = await admin(`/api/bookings/${logisticsBooking.id}/logistics`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      deployment_status: 'scheduled',
+      assigned_units: ['VB-1'],
+      setup_date: videoDate,
+      setup_time: '08:30',
+      pickup_schedule_date: videoDate,
+      pickup_schedule_time: '13:00',
+      logistics_notes: 'Loading bay access from the side street.',
+    }),
+  });
+  assert.equal(scheduledLogistics.status, 200, scheduledLogistics.body.error);
+  assert.equal(scheduledLogistics.body.booking.deployment_status, 'scheduled');
+  assert.deepEqual(scheduledLogistics.body.booking.assigned_units, ['VB-1']);
+  assert.equal(scheduledLogistics.body.booking.setup_time, '08:30');
+  assert.equal(scheduledLogistics.body.booking.pickup_schedule_time, '13:00');
+
+  const clearedScheduledUnits = await admin(`/api/bookings/${logisticsBooking.id}/logistics`, {
+    method: 'PATCH',
+    body: JSON.stringify({ assigned_units: [] }),
+  });
+  assert.equal(clearedScheduledUnits.status, 400);
+  assert.match(clearedScheduledUnits.body.error, /Assign 1 video booth unit/i);
+
+  const earlyPickup = await admin(`/api/bookings/${logisticsBooking.id}/logistics`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pickup_schedule_date: videoDate, pickup_schedule_time: '09:00' }),
+  });
+  assert.equal(earlyPickup.status, 400);
+  assert.match(earlyPickup.body.error, /before the event starts/i);
+  const clearedScheduledBranch = await admin(`/api/bookings/${logisticsBooking.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ branch_id: null }),
+  });
+  assert.equal(clearedScheduledBranch.status, 400);
+  assert.match(clearedScheduledBranch.body.error, /Assign a branch/i);
+  const movedBeforeSetup = await admin(`/api/bookings/${logisticsBooking.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ event_time: '08:00' }),
+  });
+  assert.equal(movedBeforeSetup.status, 409);
+  assert.match(movedBeforeSetup.body.error, /setup schedule/i);
+
+  const adminCalendar = await admin(`/api/logistics?from=${videoDate}&to=${videoDate}`);
+  assert.equal(adminCalendar.status, 200);
+  const logisticsEntries = adminCalendar.body.entries.filter(
+    (entry) => entry.booking_id === logisticsBooking.id
+  );
+  assert.ok(logisticsEntries.some((entry) => entry.type === 'setup'));
+  assert.ok(logisticsEntries.some((entry) => entry.type === 'event'));
+  assert.ok(logisticsEntries.some((entry) => entry.type === 'pickup'));
+  assert.ok(logisticsEntries.every((entry) => entry.assigned_units.includes('VB-1')));
+  assert.ok(adminCalendar.body.summary.assigned_units >= 1);
+  const customerLogisticsRead = await customer(`/api/logistics?from=${videoDate}&to=${videoDate}`);
+  assert.equal(customerLogisticsRead.status, 403);
+  const customerLogisticsWrite = await customer(`/api/bookings/${logisticsBooking.id}/logistics`, {
+    method: 'PATCH',
+    body: JSON.stringify({ deployment_status: 'dispatched' }),
+  });
+  assert.equal(customerLogisticsWrite.status, 403);
+  const assignedDayA = futureDate(271);
+  const assignedDayB = futureDate(272);
+  const assignedBookings = [];
+  for (const [index, day] of [assignedDayA, assignedDayB].entries()) {
+    const created = await customer('/api/bookings', {
+      method: 'POST',
+      body: JSON.stringify({
+        booking_type: 'event',
+        event_date: day,
+        event_time: '09:00',
+        duration_hours: 2,
+        branch_id: 'branch-batangas',
+        venue: `Assigned unit venue ${index + 1}`,
+        address: 'P. Burgos Street, Batangas City, Batangas',
+        items: [{ service_id: 'photobooth-4r', qty: 1 }],
+      }),
+    });
+    assert.equal(created.status, 201, created.body.error);
+    const assigned = await admin(`/api/bookings/${created.body.booking.id}/logistics`, {
+      method: 'PATCH',
+      body: JSON.stringify({ deployment_status: 'scheduled', assigned_units: ['PB-1'] }),
+    });
+    assert.equal(assigned.status, 200, assigned.body.error);
+    assignedBookings.push(assigned.body.booking);
+  }
+  const movedAssignedUnit = await admin(`/api/bookings/${assignedBookings[1].id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ event_date: assignedDayA }),
+  });
+  assert.equal(movedAssignedUnit.status, 409);
+  assert.match(movedAssignedUnit.body.error, /PB-1 is already assigned/i);
+  pass('moving a booking cannot duplicate a specific assigned unit in an overlapping window');
+
+  pass('deployment statuses, assigned units, and setup/pickup schedules are validated and scoped');
+
+  const logisticsAssistant = await admin('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({ message: `Which units are assigned to deployments on ${videoDate}?` }),
+  });
+  assert.equal(logisticsAssistant.body.in_scope, true);
+  assert.match(logisticsAssistant.body.answer, /VB-1/);
+  const scheduleAssistant = await admin('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({ message: `What is scheduled on ${videoDate}?` }),
+  });
+  assert.equal(scheduleAssistant.body.in_scope, true);
+  assert.match(scheduleAssistant.body.answer, /Setup|Event|Pickup/);
+  assert.match(scheduleAssistant.body.answer, /PM-\d+/);
+  const inventoryAssistant = await admin('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({ message: 'How many photobooth units are available?' }),
+  });
+  assert.equal(inventoryAssistant.body.in_scope, true);
+  assert.match(inventoryAssistant.body.answer, /Photobooth/);
+  const customerLogisticsAssistant = await customer('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({ message: 'Which units are assigned to my booking?' }),
+  });
+  assert.equal(customerLogisticsAssistant.body.in_scope, true);
+  assert.doesNotMatch(customerLogisticsAssistant.body.answer, /VB-1/);
+  pass('PRECIOUS answers logistics, inventory, and schedule questions within role scope');
 
   const pricing = await admin('/api/pricing');
   assert.equal(pricing.status, 200);
@@ -961,6 +1448,33 @@ try {
   assert.equal(branch2Login.status, 200);
   assert.equal(branch2Login.body.user.branch_id, 'branch-bauan');
   pass('branch 2 administrator signs in with their own account');
+
+  const branchInventory = await branch1(`/api/inventory?date=${futureDate(260)}&time=09:00&hours=3`);
+  assert.equal(branchInventory.status, 200);
+  assert.equal(branchInventory.body.inventory.totals.units, 9);
+  assert.ok(branchInventory.body.inventory.upcoming.every((item) => item.branch !== 'Bauan branch'));
+  const branchBlockAttempt = await branch1('/api/inventory/blocks', {
+    method: 'POST',
+    body: JSON.stringify({
+      booth_type: 'mirror',
+      unit_label: 'MB-1',
+      kind: 'maintenance',
+      start_date: futureDate(270),
+      start_time: '09:00',
+      end_date: futureDate(270),
+      end_time: '10:00',
+    }),
+  });
+  assert.equal(branchBlockAttempt.status, 403);
+  pass('branch heads see shared inventory counts, their own deployments, and cannot block units');
+
+  const branchCalendar = await branch1(`/api/logistics?from=${videoDate}&to=${videoDate}`);
+  assert.equal(branchCalendar.status, 200);
+  assert.ok(branchCalendar.body.entries.some((entry) => entry.ref === logisticsBooking.ref));
+  const otherBranchCalendar = await branch2(`/api/logistics?from=${videoDate}&to=${videoDate}`);
+  assert.equal(otherBranchCalendar.status, 200);
+  assert.ok(otherBranchCalendar.body.entries.every((entry) => entry.ref !== logisticsBooking.ref));
+  pass('the logistics calendar is branch-scoped for branch heads');
 
   const branch1Bookings = await branch1('/api/bookings');
   assert.ok(branch1Bookings.body.bookings.length > 0);
@@ -1351,16 +1865,28 @@ try {
   assert.equal(otherRead.status, 403);
   pass('customers cannot read another customer booking');
 
-  const report = await admin(`/api/reports?from=2026-01-01&to=${futureDate(1)}`);
+  const report = await admin(`/api/reports?from=${futureDate(0)}&to=${futureDate(260)}`);
   assert.equal(report.status, 200);
   assert.ok(report.body.report.summary.bookings >= 1);
   assert.ok(report.body.report.by_service.length >= 1);
-  pass('admin report builds from live records');
+  assert.ok(report.body.report.trend.length >= 1);
+  assert.ok(report.body.report.by_branch.length >= 1);
+  assert.ok(report.body.report.by_deployment.some((row) => row.count >= 1));
+  assert.ok(report.body.report.logistics.assigned >= 1);
+  pass('admin report builds from live records with trends and logistics');
 
-  const csv = await admin(`/api/reports.csv?from=2026-01-01&to=${futureDate(1)}`);
+  const csv = await admin(`/api/reports.csv?from=${futureDate(0)}&to=${futureDate(260)}`);
   assert.equal(csv.status, 200);
   assert.match(csv.headers.get('content-type') || '', /text\/csv/);
   assert.match(csv.body, /Precious Moments operations report/);
+  assert.match(csv.body, /Deployment status/);
+  assert.match(csv.body, /VB-1/);
+  const pdf = await admin(`/api/reports.pdf?from=${futureDate(0)}&to=${futureDate(260)}`);
+  assert.equal(pdf.status, 200);
+  assert.match(pdf.headers.get('content-type') || '', /application\/pdf/);
+  assert.match(pdf.body, /^%PDF-1\.4/);
+  assert.match(pdf.body, /Precious Moments/);
+  assert.match(pdf.body, /Deployment and schedule/);
   const emptyReport = await admin('/api/reports?from=2030-01-01&to=2030-01-31');
   assert.equal(emptyReport.status, 200);
   assert.equal(emptyReport.body.report.summary.bookings, 0);

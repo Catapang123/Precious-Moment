@@ -49,8 +49,12 @@ if (!SUPABASE_URL) {
 
 const { createStore } = await import('../server/store.js');
 const store = await createStore();
-const [bookings, users] = await Promise.all([store.list('bookings'), store.list('users')]);
-const report = buildReport(bookings, users, from, to);
+const [bookings, users, branches] = await Promise.all([
+  store.list('bookings'),
+  store.list('users'),
+  store.list('branches'),
+]);
+const report = buildReport(bookings, users, from, to, branches);
 
 const outputDir = path.resolve('reports');
 fs.mkdirSync(outputDir, { recursive: true });

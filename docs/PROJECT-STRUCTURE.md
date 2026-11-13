@@ -61,14 +61,18 @@ role and branch rules.
 | `security.js` | Password hashing, signed session/MFA cookies, TOTP, and AES-256-GCM encryption of stored factor secrets. | `hashPassword`, `verifyPassword`, `createSessionToken`, `verifyTotp`, `encryptMfaSecret`, `decryptMfaSecret`, `sanitizeUser` | routes, seed, setup scripts |
 | `catalog.js` | The 2026 price catalog, quantity breaks, client-only rates, and server-side line pricing. | `CATEGORIES`, `SERVICES`, `CLIENT_PRICES`, `PRICE_REVIEWS`, `tierFor`, `priceLine` | routes, seed, availability, assistant |
 | `availability.js` | Booth/crew concurrency rules and next-free-slot search. | `checkCapacity`, `nextAvailableStart`, `capacityUnits` | bookings routes, assistant |
+| `inventory.js` | Studio-wide physical booth units, overlapping commitments, maintenance blocks, and dashboard snapshots. | `BOOTH_TYPES`, `boothUnitsForItems`, `checkBoothInventory`, `inventoryUsage`, `buildInventorySnapshot` | bookings routes, `/api/inventory` |
+| `logistics.js` | Deployment statuses, assigned-unit validation, and the setup/event/pickup calendar builder. | `DEPLOYMENT_STATUSES`, `assignedUnitsOf`, `validateAssignedUnits`, `buildCalendar` | booking logistics route, `/api/logistics`, assistant, reports |
 | `geo.js` | Geocodes an address and picks the nearest branch. | `locateBookingAddress`, `assignBranch` | bookings routes |
-| `assistant.js` | Deterministic in-app Q&A over catalog, branches, policies, own bookings. | `answerQuestion`, `OUT_OF_SCOPE` | `/api/assistant` |
+| `assistant.js` | Deterministic in-app Q&A over catalog, branches, policies, own bookings, scoped inventory, deployments, and schedules. | `answerQuestion`, `OUT_OF_SCOPE` | `/api/assistant` |
 | `images.js` | Validates JPG/PNG/WEBP uploads and persists them to Supabase Storage, with local disk as the development fallback. | `saveProductImage`, `removeProductImage`, `inspectProductImage` | service-image routes |
 | `mail.js` | Delivers password-reset email through Resend with a request timeout; prints the link in development. | `sendPasswordResetEmail` | auth routes |
-| `reports.js` | Aggregates bookings and renders CSV. | `buildReport`, `reportCsv` | report routes, `scripts/report.mjs` |
+| `reports.js` | Aggregates bookings into summary/trend/logistics data and renders CSV or PDF. | `buildReport`, `reportCsv`, `reportPdf` | report routes, `scripts/report.mjs` |
 | `seed.js` | Branches, studio accounts, demo bookings with fixed ids. | `buildSeed`, `SEED_BRANCHES` | `store.js`, setup scripts |
 
 **Where a rule belongs.** Prices: `catalog.js`. Capacity: `availability.js`.
+Physical booth units and blocks: `inventory.js`. Deployment status, unit
+assignment, and schedule calendar: `logistics.js`.
 Branch routing: `geo.js`. Authorization: `app.js`. Anything that persists:
 `store.js`. Keeping those boundaries is what lets the JSON store and Supabase
 stay interchangeable.
@@ -82,13 +86,15 @@ stay interchangeable.
 | Owner pricing | `GET /api/pricing`, `PATCH /api/services/:id` |
 | Images | `GET /api/product-images`, `POST/DELETE /api/services/:id/image` |
 | Audit | `GET /api/audit-logs` |
-| Bookings | `GET/POST /api/bookings`, `GET /api/bookings/:id`, `PATCH /api/bookings/:id`, `PATCH /api/bookings/:id/payment` |
+| Bookings | `GET/POST /api/bookings`, `GET /api/bookings/:id`, `PATCH /api/bookings/:id`, `PATCH /api/bookings/:id/payment`, `PATCH /api/bookings/:id/logistics` |
 | Availability | `GET /api/availability`, `POST /api/assistant` |
+| Logistics | `GET /api/logistics` (month range, role/branch scoped) |
+| Inventory | `GET /api/inventory`, `POST /api/inventory/blocks`, `PATCH /api/inventory/blocks/:id` |
 | Discounts | `GET /api/discounts/mine`, `GET/POST /api/discounts`, `PATCH /api/discounts/:id` |
 | Studio | `GET /api/branches`, `GET /api/notifications`, `POST /api/notifications/read` |
 | Accounts | `GET/POST /api/accounts`, `PATCH /api/accounts/:id`, `POST /api/accounts/:id/reset`, `POST /api/accounts/:id/mfa-reset` |
 | Crew | `GET/POST /api/staff`, `PATCH /api/staff/:id` |
-| Reports | `GET /api/reports`, `GET /api/reports.csv` |
+| Reports | `GET /api/reports`, `GET /api/reports.csv`, `GET /api/reports.pdf` |
 
 ---
 
@@ -117,8 +123,8 @@ The file is ordered so a change has one obvious home:
 3. Shell and routing (`renderChrome`, `navigate`, `renderView`)
 4. Views: customer, staff, owner/branch head
 5. Booking flow: catalog, cart, availability, submit
-6. Management views: bookings table, team, discounts, account, assistant
-7. Payments, reports, alerts
+6. Management views: bookings table, logistics calendar, team, discounts, account, assistant
+7. Payments, report graphs and exports, alerts
 8. Drawer and modal templates, motion, open/close, record actions
 9. Delegated event listeners and `init()`
 
@@ -154,6 +160,8 @@ Every value interpolated into a template literal goes through `esc()` from
 | `migrate-pricing.sql` | Adds tier, setup-fee, capacity, and review columns to `pm_services` on an existing project. |
 | `migrate-booking-availability.sql` | Booking availability and product-management fields. |
 | `migrate-catalog-images-auth.sql` | Images, measured pricing, resets, and audit logs. |
+| `migrate-inventory.sql` | Additive `pm_inventory_blocks` table, RLS, and indexes for maintenance blocks. |
+| `migrate-logistics.sql` | Additive deployment status, assigned units, setup/pickup schedules, logistics notes, timestamps, and indexes on `pm_bookings`. |
 
 `server/store.js` maps the short names (`bookings`) to the `pm_` tables, so SQL
 changes should be paired with that map.
@@ -184,8 +192,8 @@ changes should be paired with that map.
 ## Adding a feature
 
 1. Data: extend `server/store.js` (`TABLES` if Supabase is involved) and the SQL.
-2. Rule: put pricing in `catalog.js`, capacity in `availability.js`, and
-   permissions in `app.js`.
+2. Rule: put pricing in `catalog.js`, capacity in `availability.js`, physical
+   inventory in `inventory.js`, and permissions in `app.js`.
 3. Route: add it to the matching section of `server/app.js`, with
    `requireAuth` / `requireRole` and the same-origin check already applied.
 4. UI: add the view function and a `NAV`/`PAGE_META` entry in `public/js/app.js`.
