@@ -95,6 +95,9 @@
           <div><strong>PRECIOUS</strong><span>Your personal AI assistant</span></div>
         </div>
         <div class="assistant-head-actions">
+          <button class="icon-button" type="button" data-assistant-history-toggle aria-expanded="false" aria-controls="assistant-history" aria-label="Show previous conversations" title="Previous conversations">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>
+          </button>
           <button class="assistant-lang" type="button" data-assistant-lang aria-pressed="false" title="Switch between English and Filipino">EN</button>
           <button class="icon-button" type="button" data-assistant-minimize aria-label="Minimize assistant">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" /></svg>
@@ -104,6 +107,13 @@
           </button>
         </div>
       </header>
+      <section class="assistant-history" id="assistant-history" data-assistant-history hidden aria-label="Previous conversations">
+        <div class="assistant-history-head">
+          <strong>Previous conversations</strong>
+          <button class="assistant-new" type="button" data-assistant-new>New chat</button>
+        </div>
+        <div class="assistant-history-list" data-assistant-history-list></div>
+      </section>
       <div class="assistant-log" data-assistant-log aria-live="polite"></div>
       <div class="assistant-suggestions" data-assistant-suggestions></div>
       <form class="assistant-form" id="assistant-form">

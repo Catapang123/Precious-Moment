@@ -15,7 +15,16 @@ import crypto from 'node:crypto';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { answerQuestion } from './assistant.js';
+import { AI_ENABLED, answerQuestionWithAi } from './ai.js';
+import {
+  aiHistory,
+  appendMessage,
+  createConversation,
+  getConversation,
+  getConversationRecord,
+  historyUnavailable,
+  listConversations,
+} from './assistant-history.js';
 import { capacityUnits, checkCapacity, toMinutes } from './availability.js';
 import {
   BOOTH_KINDS,
@@ -1617,7 +1626,12 @@ export function createApp(store) {
 
   // Liveness only: this proves the process is up, not that its dependencies are.
   app.get('/api/health', (req, res) => {
-    json(res, 200, { ok: true, store: store.mode, time: new Date().toISOString() });
+    json(res, 200, {
+      ok: true,
+      store: store.mode,
+      assistant: AI_ENABLED ? 'model' : 'deterministic',
+      time: new Date().toISOString(),
+    });
   });
 
   // Readiness proves the process can actually reach its data store. Render and
@@ -1625,7 +1639,12 @@ export function createApp(store) {
   app.get('/api/ready', async (req, res) => {
     try {
       await store.list('branches');
-      json(res, 200, { ok: true, store: store.mode, time: new Date().toISOString() });
+      json(res, 200, {
+        ok: true,
+        store: store.mode,
+        assistant: AI_ENABLED ? 'model' : 'deterministic',
+        time: new Date().toISOString(),
+      });
     } catch (error) {
       console.error('Readiness check failed:', error.message);
       json(res, 503, { ok: false, store: store.mode, error: 'Database is not ready.' });
@@ -3092,14 +3111,101 @@ export function createApp(store) {
   );
 
   // ---- Grounded assistant
+  app.get(
+    '/api/assistant/conversations',
+    requireAuth,
+    wrap(async (req, res) => {
+      try {
+        const conversations = await listConversations(store, req.user.id);
+        json(res, 200, { conversations, available: true });
+      } catch (error) {
+        if (!historyUnavailable(error)) throw error;
+        json(res, 200, { conversations: [], available: false });
+      }
+    })
+  );
+
+  app.get(
+    '/api/assistant/conversations/:id',
+    requireAuth,
+    wrap(async (req, res) => {
+      try {
+        const conversation = await getConversation(store, req.user.id, req.params.id);
+        if (!conversation) throw fail(404, 'That conversation was not found.');
+        json(res, 200, { ...conversation, available: true });
+      } catch (error) {
+        if (!historyUnavailable(error)) throw error;
+        json(res, 200, { conversation: null, messages: [], available: false });
+      }
+    })
+  );
+
   app.post(
     '/api/assistant',
     requireAuth,
     wrap(async (req, res) => {
       const message = String(req.body?.message || '').trim();
       if (!message) throw fail(400, 'Type a question first.');
-      const result = await answerQuestion(store, req.user, message);
-      json(res, 200, result);
+      if (message.length > 500) throw fail(400, 'Please keep the question under 500 characters.');
+
+      const requestedId = String(req.body?.conversation_id || '').trim();
+      let record = null;
+      let conversation = null;
+      let historySaved = true;
+      if (requestedId) {
+        try {
+          record = await getConversationRecord(store, req.user.id, requestedId);
+        } catch (error) {
+          if (!historyUnavailable(error)) throw error;
+          historySaved = false;
+        }
+        // A conversation belonging to someone else is indistinguishable from
+        // one that does not exist: no title, id, or message is disclosed.
+        if (historySaved && !record) throw fail(404, 'That conversation was not found.');
+      }
+
+      if (historySaved) {
+        try {
+          conversation = record
+            ? record.conversation
+            : await createConversation(store, req.user.id, message);
+          await appendMessage(store, conversation, req.user.id, 'user', message);
+        } catch (error) {
+          if (!historyUnavailable(error)) throw error;
+          historySaved = false;
+          conversation = null;
+          record = null;
+        }
+      }
+
+      const result = await answerQuestionWithAi({
+        store,
+        user: req.user,
+        message,
+        history: record ? aiHistory(record) : undefined,
+      });
+
+      if (historySaved && conversation) {
+        try {
+          await appendMessage(store, conversation, req.user.id, 'assistant', result.answer);
+        } catch (error) {
+          if (!historyUnavailable(error)) throw error;
+        }
+      }
+
+      json(res, 200, {
+        ...result,
+        conversation_id: historySaved && conversation ? conversation.id : null,
+        conversation:
+          historySaved && conversation
+            ? {
+                id: conversation.id,
+                title: conversation.title,
+                updated_at: conversation.updated_at,
+              }
+            : null,
+        history_saved: Boolean(historySaved && conversation),
+      });
     })
   );
 

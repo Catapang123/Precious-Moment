@@ -256,6 +256,13 @@ const state = {
   imageSearch: '',
   imageSelections: new Map(),
   chat: [],
+  chatId: null,
+  chatConversations: [],
+  chatHistoryOpen: false,
+  chatHistoryLoading: false,
+  chatHistoryLoaded: false,
+  chatHistoryError: '',
+  chatLoadingConversation: false,
   // PRECIOUS: which language the panel speaks, whether a reply is pending, and
   // the last message to resend if a request failed.
   chatLang: 'en',
@@ -2749,8 +2756,6 @@ function renderAdminDiscounts() {
 
 /* ---------- Assistant ---------- */
 
-const CHAT_KEY = 'pm.precious.chat';
-
 /** The first thing PRECIOUS says, in both languages. */
 const PRECIOUS_GREETING = {
   en: "Hi! I'm PRECIOUS, your AI assistant. Kumusta! I'm here to help you navigate the system, answer your questions, and assist you whenever you need help.",
@@ -2793,21 +2798,12 @@ const PRECIOUS_SUGGESTIONS = {
   },
 };
 
-/** Chat history survives a refresh within the tab, and nothing leaves the browser. */
-function restoreAssistantHistory() {
+/** Removes the old tab-only transcript so it cannot reappear after this update. */
+function clearLegacyAssistantHistory() {
   try {
-    const saved = JSON.parse(sessionStorage.getItem(CHAT_KEY) || '[]');
-    if (Array.isArray(saved)) state.chat = saved.slice(-40);
+    sessionStorage.removeItem('pm.precious.chat');
   } catch {
-    state.chat = [];
-  }
-}
-
-function saveAssistantHistory() {
-  try {
-    sessionStorage.setItem(CHAT_KEY, JSON.stringify(state.chat.slice(-40)));
-  } catch {
-    // Private mode or a full quota: the conversation still works in memory.
+    // Storage may be unavailable in private mode; there is nothing to clean up.
   }
 }
 
@@ -2857,6 +2853,143 @@ function renderAssistantSuggestions() {
     .join('');
 }
 
+/** Renders the signed-in user's conversation drawer. Only server data is used. */
+function renderAssistantHistory() {
+  const panel = document.getElementById('assistant-panel');
+  const box = document.querySelector('[data-assistant-history]');
+  const list = document.querySelector('[data-assistant-history-list]');
+  const toggle = document.querySelector('[data-assistant-history-toggle]');
+  if (!box || !list) return;
+  const open = Boolean(state.chatHistoryOpen);
+  box.hidden = !open;
+  panel?.classList.toggle('is-history', open);
+  toggle?.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  if (state.chatHistoryLoading) {
+    list.innerHTML = '<p class="assistant-history-status" role="status">Loading conversations…</p>';
+    return;
+  }
+  if (state.chatHistoryError) {
+    list.innerHTML = `
+      <div class="assistant-history-status" role="alert">
+        <p>${esc(state.chatHistoryError)}</p>
+        <button class="btn btn-sm" type="button" data-assistant-history-retry>Try again</button>
+      </div>`;
+    return;
+  }
+  if (!state.chatConversations.length) {
+    list.innerHTML =
+      '<p class="assistant-history-status">No previous conversations yet. Your chats will appear here after you send a question.</p>';
+    return;
+  }
+  list.innerHTML = state.chatConversations
+    .map(
+      (conversation) => `
+      <button class="assistant-conversation${conversation.id === state.chatId ? ' is-active' : ''}" type="button" data-assistant-conversation="${esc(conversation.id)}"${conversation.id === state.chatId ? ' aria-current="true"' : ''}>
+        <strong>${esc(conversation.title || 'New conversation')}</strong>
+        <span>${esc(conversation.preview || 'No messages yet')}</span>
+        <time datetime="${esc(conversation.updated_at || '')}">${esc(formatDateTime(conversation.updated_at))}</time>
+      </button>`
+    )
+    .join('');
+}
+
+async function loadAssistantConversations(force = false) {
+  if (state.chatHistoryLoading) return;
+  if (!force && state.chatHistoryLoaded) return;
+  state.chatHistoryLoading = true;
+  state.chatHistoryError = '';
+  renderAssistantHistory();
+  try {
+    const data = await api('/api/assistant/conversations');
+    state.chatConversations = Array.isArray(data.conversations) ? data.conversations : [];
+    state.chatHistoryLoaded = true;
+    if (data.available === false) {
+      state.chatHistoryError = 'Chat history is not available yet. Ask the studio to finish the database setup.';
+    }
+  } catch (error) {
+    state.chatHistoryError = errorInfo(error).message;
+  } finally {
+    state.chatHistoryLoading = false;
+    renderAssistantHistory();
+  }
+}
+
+function toggleAssistantHistory() {
+  state.chatHistoryOpen = !state.chatHistoryOpen;
+  if (state.chatHistoryOpen) document.getElementById('assistant-panel')?.classList.remove('is-min');
+  renderAssistantHistory();
+  if (state.chatHistoryOpen) loadAssistantConversations();
+}
+
+async function openAssistantConversation(id) {
+  if (!id || state.chatLoadingConversation || state.chatTyping) return;
+  state.chatLoadingConversation = true;
+  try {
+    const data = await api(`/api/assistant/conversations/${encodeURIComponent(id)}`);
+    if (data.available === false || !data.conversation) {
+      state.chatHistoryError =
+        data.available === false
+          ? 'Chat history is not available yet. Ask the studio to finish the database setup.'
+          : 'That conversation could not be opened.';
+      state.chatHistoryOpen = true;
+      renderAssistantHistory();
+      return;
+    }
+    state.chatId = data.conversation.id;
+    state.chat = (data.messages || []).map((message) => ({
+      role: message.role === 'assistant' ? 'studio' : 'user',
+      text: String(message.content || ''),
+    }));
+    state.chatRetry = '';
+    state.chatHistoryError = '';
+    state.chatHistoryOpen = false;
+    renderAssistantHistory();
+    renderAssistantLog();
+    document.getElementById('assistant-input')?.focus();
+  } catch (error) {
+    state.chatHistoryError = errorInfo(error).message;
+    state.chatHistoryOpen = true;
+    if (error.status === 404) {
+      state.chatConversations = state.chatConversations.filter((conversation) => conversation.id !== id);
+    }
+    renderAssistantHistory();
+  } finally {
+    state.chatLoadingConversation = false;
+  }
+}
+
+function startNewAssistantChat() {
+  if (state.chatTyping) return;
+  state.chatId = null;
+  state.chat = [];
+  state.chatRetry = '';
+  state.chatHistoryOpen = false;
+  renderAssistantHistory();
+  renderAssistantLog();
+  document.getElementById('assistant-input')?.focus();
+}
+
+/** Keeps an already-loaded drawer fresh after a successful reply. */
+function rememberAssistantConversation(conversation, answer) {
+  if (!conversation || !state.chatHistoryLoaded) return;
+  const existing = state.chatConversations.find((item) => item.id === conversation.id);
+  const updatedAt = conversation.updated_at || new Date().toISOString();
+  const next = {
+    id: conversation.id,
+    title: conversation.title || existing?.title || 'New conversation',
+    created_at: existing?.created_at || updatedAt,
+    updated_at: updatedAt,
+    preview: String(answer || '').slice(0, 120),
+    message_count: (existing?.message_count || 0) + 2,
+  };
+  state.chatConversations = [
+    next,
+    ...state.chatConversations.filter((item) => item.id !== conversation.id),
+  ].sort((first, second) => String(second.updated_at).localeCompare(String(first.updated_at)));
+  renderAssistantHistory();
+}
+
 /**
  * Opens the in-app assistant panel without leaving the page. Focus moves to the
  * input so a keyboard user can type immediately; `closeAssistant` restores it.
@@ -2874,6 +3007,7 @@ function openAssistant() {
   panel.classList.remove('is-closing');
   panel.hidden = false;
   renderAssistantLog();
+  renderAssistantHistory();
   requestAnimationFrame(() => panel.classList.add('is-open'));
   // Hidden tabs can suspend rAF; open anyway rather than leaving it half-shown.
   setTimeout(() => panel.classList.add('is-open'), 120);
@@ -2886,6 +3020,10 @@ function minimizeAssistant() {
   const panel = document.getElementById('assistant-panel');
   if (!panel) return;
   panel.classList.toggle('is-min');
+  if (panel.classList.contains('is-min')) {
+    state.chatHistoryOpen = false;
+    renderAssistantHistory();
+  }
   if (!panel.classList.contains('is-min')) document.getElementById('assistant-input')?.focus();
 }
 
@@ -2920,23 +3058,36 @@ function toggleAssistantLang() {
 async function sendAssistant(message) {
   const text = String(message || '').trim();
   if (!text || state.chatTyping) return;
+  const conversationId = state.chatId;
   state.chatRetry = '';
+  state.chatHistoryOpen = false;
+  renderAssistantHistory();
   state.chat.push({ role: 'user', text });
   state.chatTyping = true;
   renderAssistantLog();
   try {
-    const { answer } = await api('/api/assistant', {
+    const data = await api('/api/assistant', {
       method: 'POST',
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({
+        message: text,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+      }),
     });
-    state.chat.push({ role: 'studio', text: answer });
+    state.chat.push({ role: 'studio', text: data.answer });
+    if (data.history_saved !== false && data.conversation_id) {
+      state.chatId = data.conversation_id;
+      state.chatHistoryError = '';
+      rememberAssistantConversation(data.conversation, data.answer);
+    } else if (data.history_saved === false) {
+      state.chatHistoryLoaded = false;
+      state.chatHistoryError = 'This chat could not be saved to your account. Please try again later.';
+    }
   } catch (error) {
     const info = errorInfo(error);
     state.chat.push({ role: 'studio', text: `${info.title}. ${info.message}`, error: true });
     state.chatRetry = text;
   } finally {
     state.chatTyping = false;
-    saveAssistantHistory();
     renderAssistantLog();
   }
 }
@@ -5490,6 +5641,8 @@ function primeRows() {
 function closeAssistant() {
   const panel = document.getElementById('assistant-panel');
   if (!panel || panel.hidden || panel.dataset.closing === '1') return;
+  state.chatHistoryOpen = false;
+  renderAssistantHistory();
   panel.dataset.closing = '1';
   panel.classList.remove('is-open');
   panel.classList.add('is-closing');
@@ -6546,6 +6699,22 @@ document.addEventListener('click', async (event) => {
     toggleAssistantLang();
     return;
   }
+  if (target.closest('[data-assistant-history-toggle]')) {
+    toggleAssistantHistory();
+    return;
+  }
+  if (target.closest('[data-assistant-history-retry]')) {
+    loadAssistantConversations(true);
+    return;
+  }
+  if (target.closest('[data-assistant-new]')) {
+    startNewAssistantChat();
+    return;
+  }
+  if (target.closest('[data-assistant-conversation]')) {
+    openAssistantConversation(target.closest('[data-assistant-conversation]').dataset.assistantConversation || '');
+    return;
+  }
   if (target.closest('[data-assistant-suggest]')) {
     const question = target.closest('[data-assistant-suggest]').dataset.assistantSuggest || '';
     sendAssistant(question);
@@ -7113,7 +7282,7 @@ async function init() {
       state.staff = [];
       state.notifications = [];
       state.unread = 0;
-      restoreAssistantHistory();
+      clearLegacyAssistantHistory();
       setupConnectivity();
       setupSessionGuard();
       if (!window.location.hash) history.replaceState(null, '', '#account');
@@ -7143,9 +7312,9 @@ async function init() {
     state.staff = staffData?.staff || [];
     state.notifications = alertData?.notifications || [];
     state.unread = alertData?.unread || 0;
-    // Global state wiring: keep the assistant transcript for this tab, watch the
-    // connection, classify 401/403 responses, and put back an unfinished booking.
-    restoreAssistantHistory();
+    // Global state wiring: the assistant transcript lives on the server, while
+    // this tab keeps only the current conversation in memory.
+    clearLegacyAssistantHistory();
     setupConnectivity();
     setupSessionGuard();
     if (user.role === 'customer') restoreBookingDraft();

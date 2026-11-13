@@ -47,6 +47,8 @@ function createLocalStore() {
       booking_files: [],
       booking_cancellations: [],
       inventory_blocks: [],
+      assistant_conversations: [],
+      assistant_messages: [],
       branches: [],
       notifications: [],
       discounts: [],
@@ -65,6 +67,14 @@ function createLocalStore() {
     mode: 'local',
     async list(table) {
       return clone(data[table] || []);
+    },
+    async listWhere(table, filters = {}) {
+      const entries = Object.entries(filters);
+      return clone(
+        (data[table] || []).filter((row) =>
+          entries.every(([key, value]) => row[key] === value)
+        )
+      );
     },
     async get(table, id) {
       const row = (data[table] || []).find((item) => item.id === id);
@@ -108,6 +118,8 @@ const TABLES = {
   booking_files: 'pm_booking_files',
   booking_cancellations: 'pm_booking_cancellations',
   inventory_blocks: 'pm_inventory_blocks',
+  assistant_conversations: 'pm_assistant_conversations',
+  assistant_messages: 'pm_assistant_messages',
   branches: 'pm_branches',
   notifications: 'pm_notifications',
   discounts: 'pm_discounts',
@@ -141,6 +153,22 @@ function createSupabaseStore() {
         const { data, error } = await client
           .from(table(name))
           .select('*')
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1);
+        fail(error, `select ${name}`);
+        if (!data?.length) break;
+        rows.push(...data);
+        if (data.length < pageSize) break;
+      }
+      return rows;
+    },
+    async listWhere(name, filters = {}) {
+      const rows = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        let query = client.from(table(name)).select('*');
+        if (Object.keys(filters).length) query = query.match(filters);
+        const { data, error } = await query
           .order('id', { ascending: true })
           .range(from, from + pageSize - 1);
         fail(error, `select ${name}`);

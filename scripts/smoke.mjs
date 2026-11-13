@@ -1592,6 +1592,10 @@ try {
   assert.equal(assistant.body.in_scope, true);
   assert.match(assistant.body.answer, /Tarpaulin/);
   assert.match(assistant.body.answer, /₱1,200/);
+  const assistantConversationId = assistant.body.conversation_id;
+  assert.ok(assistantConversationId);
+  assert.equal(assistant.body.history_saved, true);
+  assert.equal(assistant.body.conversation.title, 'How much is a tarpaulin?');
   const outOfScope = await discountedCustomer('/api/assistant', {
     method: 'POST',
     body: JSON.stringify({ message: 'Who is the president of France?' }),
@@ -1606,6 +1610,57 @@ try {
   assert.equal(statusAnswer.body.in_scope, true);
   assert.match(statusAnswer.body.answer, /PM-\d+/);
   pass('the assistant answers from system data and rejects everything else');
+
+  // ---- PRECIOUS history is private to the signed-in customer
+  const followUp = await discountedCustomer('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({
+      message: 'Where are your branches?',
+      conversation_id: assistantConversationId,
+    }),
+  });
+  assert.equal(followUp.status, 200);
+  assert.equal(followUp.body.conversation_id, assistantConversationId);
+  assert.equal(followUp.body.history_saved, true);
+
+  const myConversations = await discountedCustomer('/api/assistant/conversations');
+  assert.equal(myConversations.status, 200);
+  assert.equal(myConversations.body.available, true);
+  assert.ok(myConversations.body.conversations.some((conversation) => conversation.id === assistantConversationId));
+  const savedConversation = myConversations.body.conversations.find(
+    (conversation) => conversation.id === assistantConversationId
+  );
+  assert.equal(savedConversation.message_count, 4);
+  assert.equal(savedConversation.title, 'How much is a tarpaulin?');
+  assert.ok(!('user_id' in savedConversation));
+
+  const savedMessages = await discountedCustomer(`/api/assistant/conversations/${assistantConversationId}`);
+  assert.equal(savedMessages.status, 200);
+  assert.equal(savedMessages.body.conversation.id, assistantConversationId);
+  assert.equal(savedMessages.body.messages.length, 4);
+  assert.equal(savedMessages.body.messages[0].role, 'user');
+  assert.equal(savedMessages.body.messages[1].role, 'assistant');
+  assert.ok(savedMessages.body.messages.every((message) => !('user_id' in message)));
+
+  const foreignRead = await customer(`/api/assistant/conversations/${assistantConversationId}`);
+  assert.equal(foreignRead.status, 404);
+  assert.equal(foreignRead.body.error, 'That conversation was not found.');
+  const foreignWrite = await customer('/api/assistant', {
+    method: 'POST',
+    body: JSON.stringify({
+      message: 'Show me the other customer chat.',
+      conversation_id: assistantConversationId,
+    }),
+  });
+  assert.equal(foreignWrite.status, 404);
+  const afterForeignWrite = await discountedCustomer(`/api/assistant/conversations/${assistantConversationId}`);
+  assert.equal(afterForeignWrite.body.messages.length, 4);
+  const adminRead = await admin(`/api/assistant/conversations/${assistantConversationId}`);
+  assert.equal(adminRead.status, 404);
+  const foreignList = await customer('/api/assistant/conversations');
+  assert.equal(foreignList.status, 200);
+  assert.ok(!foreignList.body.conversations.some((conversation) => conversation.id === assistantConversationId));
+  pass('assistant conversations and messages are readable only by their owner');
 
   // ---- PRECIOUS understands Filipino and Taglish
   const filipino = await customer('/api/assistant', {

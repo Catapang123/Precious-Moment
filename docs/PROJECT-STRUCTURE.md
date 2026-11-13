@@ -57,7 +57,7 @@ role and branch rules.
 | --- | --- | --- | --- |
 | `app.js` | Every HTTP route, middleware, and permission rule. | `createApp(store)` | `server.js`, `scripts/smoke.mjs` |
 | `config.js` | Reads `process.env` once into typed constants. | `PORT`, `DATA_DIR`, `STORE_MODE`, `SEED_DEMO`, `MAX_SIMULTANEOUS_SERVICES`, geocoder settings | all server modules |
-| `store.js` | Persistence behind one interface: `list/get/insert/insertMany/update/remove`. | `createStore()` | routes, scripts, reports |
+| `store.js` | Persistence behind one interface: `list/listWhere/get/insert/insertMany/update/remove`. | `createStore()` | routes, scripts, reports |
 | `security.js` | Password hashing, signed session/MFA cookies, TOTP, and AES-256-GCM encryption of stored factor secrets. | `hashPassword`, `verifyPassword`, `createSessionToken`, `verifyTotp`, `encryptMfaSecret`, `decryptMfaSecret`, `sanitizeUser` | routes, seed, setup scripts |
 | `catalog.js` | The 2026 price catalog, quantity breaks, client-only rates, and server-side line pricing. | `CATEGORIES`, `SERVICES`, `CLIENT_PRICES`, `PRICE_REVIEWS`, `tierFor`, `priceLine` | routes, seed, availability, assistant |
 | `availability.js` | Booth/crew concurrency rules and next-free-slot search. | `checkCapacity`, `nextAvailableStart`, `capacityUnits` | bookings routes, assistant |
@@ -65,6 +65,8 @@ role and branch rules.
 | `logistics.js` | Deployment statuses, assigned-unit validation, and the setup/event/pickup calendar builder. | `DEPLOYMENT_STATUSES`, `assignedUnitsOf`, `validateAssignedUnits`, `buildCalendar` | booking logistics route, `/api/logistics`, assistant, reports |
 | `geo.js` | Geocodes an address and picks the nearest branch. | `locateBookingAddress`, `assignBranch` | bookings routes |
 | `assistant.js` | Deterministic in-app Q&A over catalog, branches, policies, own bookings, scoped inventory, deployments, and schedules. | `answerQuestion`, `OUT_OF_SCOPE` | `/api/assistant` |
+| `ai.js` | Hosted-model layer that calls the deterministic engine through a scoped tool, validates every draft against trusted data, and falls back safely. | `answerQuestionWithAi`, `validateAiAnswer`, `AI_ENABLED` | `/api/assistant` |
+| `assistant-history.js` | Owner-scoped conversation and message persistence. Every read and write takes the session user id; foreign ids return no record. | `listConversations`, `getConversation`, `createConversation`, `appendMessage`, `aiHistory` | `/api/assistant`, `/api/assistant/conversations` |
 | `images.js` | Validates JPG/PNG/WEBP uploads and persists them to Supabase Storage, with local disk as the development fallback. | `saveProductImage`, `removeProductImage`, `inspectProductImage` | service-image routes |
 | `mail.js` | Delivers password-reset email through Resend with a request timeout; prints the link in development. | `sendPasswordResetEmail` | auth routes |
 | `reports.js` | Aggregates bookings into summary/trend/logistics data and renders CSV or PDF. | `buildReport`, `reportCsv`, `reportPdf` | report routes, `scripts/report.mjs` |
@@ -87,7 +89,7 @@ stay interchangeable.
 | Images | `GET /api/product-images`, `POST/DELETE /api/services/:id/image` |
 | Audit | `GET /api/audit-logs` |
 | Bookings | `GET/POST /api/bookings`, `GET /api/bookings/:id`, `PATCH /api/bookings/:id`, `PATCH /api/bookings/:id/payment`, `PATCH /api/bookings/:id/logistics` |
-| Availability | `GET /api/availability`, `POST /api/assistant` |
+| Availability and assistant | `GET /api/availability`, `POST /api/assistant`, `GET /api/assistant/conversations`, `GET /api/assistant/conversations/:id` |
 | Logistics | `GET /api/logistics` (month range, role/branch scoped) |
 | Inventory | `GET /api/inventory`, `POST /api/inventory/blocks`, `PATCH /api/inventory/blocks/:id` |
 | Discounts | `GET /api/discounts/mine`, `GET/POST /api/discounts`, `PATCH /api/discounts/:id` |
@@ -154,7 +156,7 @@ Every value interpolated into a template literal goes through `esc()` from
 
 | File | Purpose |
 | --- | --- |
-| `schema.sql` | Base tables: `pm_users`, `pm_services`, `pm_bookings`, `pm_booking_updates`, `pm_branches`, `pm_notifications`, `pm_discounts`, `pm_password_resets`, `pm_audit_logs`. |
+| `schema.sql` | Base tables: `pm_users`, `pm_services`, `pm_bookings`, `pm_booking_updates`, `pm_branches`, `pm_notifications`, `pm_discounts`, `pm_assistant_conversations`, `pm_assistant_messages`, `pm_password_resets`, `pm_audit_logs`. |
 | `migrate-branches.sql` | Branch columns and branch-head accounts. |
 | `migrate-features.sql` | Booking types, discounts, notifications, two-factor columns. |
 | `migrate-pricing.sql` | Adds tier, setup-fee, capacity, and review columns to `pm_services` on an existing project. |
@@ -162,6 +164,7 @@ Every value interpolated into a template literal goes through `esc()` from
 | `migrate-catalog-images-auth.sql` | Images, measured pricing, resets, and audit logs. |
 | `migrate-inventory.sql` | Additive `pm_inventory_blocks` table, RLS, and indexes for maintenance blocks. |
 | `migrate-logistics.sql` | Additive deployment status, assigned units, setup/pickup schedules, logistics notes, timestamps, and indexes on `pm_bookings`. |
+| `migrate-assistant-history.sql` | Additive private `pm_assistant_conversations` and `pm_assistant_messages` tables, RLS, composite ownership key, and indexes. |
 
 `server/store.js` maps the short names (`bookings`) to the `pm_` tables, so SQL
 changes should be paired with that map.

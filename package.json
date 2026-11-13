@@ -12,7 +12,7 @@
     "setup": "node scripts/bootstrap.mjs",
     "setup:branches": "node scripts/setup-branches.mjs",
     "sync:prices": "node scripts/sync-prices.mjs",
-    "test": "node scripts/smoke.mjs",
+    "test": "node scripts/smoke.mjs && node scripts/ai-smoke.mjs",
     "build:shop": "vite build --config client/vite.config.js",
     "dev:shop": "vite --config client/vite.config.js"
   },

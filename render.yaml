@@ -27,3 +27,9 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      - key: ZAI_API_KEY
+        sync: false
+      - key: ZAI_API_BASE
+        value: https://api.z.ai/api/paas/v4
+      - key: ZAI_MODEL
+        value: glm-5.3-flash

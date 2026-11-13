@@ -146,6 +146,29 @@ create table if not exists public.pm_discounts (
   updated_at timestamptz not null default now()
 );
 
+-- Private assistant conversations. The composite key and the matching
+-- (conversation_id, user_id) foreign key below make it impossible for a message
+-- to be attached to another customer's conversation, even through a server bug.
+create table if not exists public.pm_assistant_conversations (
+  id text primary key,
+  user_id text not null references public.pm_users(id) on delete cascade,
+  title text not null default 'New conversation' check (char_length(title) between 1 and 80),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (id, user_id)
+);
+
+create table if not exists public.pm_assistant_messages (
+  id text primary key,
+  conversation_id text not null,
+  user_id text not null,
+  role text not null check (role in ('user', 'assistant')),
+  content text not null check (char_length(content) between 1 and 4000),
+  created_at timestamptz not null default now(),
+  foreign key (conversation_id, user_id)
+    references public.pm_assistant_conversations (id, user_id) on delete cascade
+);
+
 create table if not exists public.pm_password_resets (
   id text primary key,
   user_id text not null references public.pm_users(id) on delete cascade,
@@ -241,6 +264,12 @@ create index if not exists pm_inventory_blocks_window_idx
 create index if not exists pm_inventory_blocks_active_idx
   on public.pm_inventory_blocks (active, start_date);
 create index if not exists pm_discounts_customer_idx on public.pm_discounts (customer_id) where active;
+create index if not exists pm_assistant_conversations_user_idx
+  on public.pm_assistant_conversations (user_id, updated_at desc);
+create index if not exists pm_assistant_messages_conversation_idx
+  on public.pm_assistant_messages (conversation_id, created_at);
+create index if not exists pm_assistant_messages_user_idx
+  on public.pm_assistant_messages (user_id, created_at desc);
 create index if not exists pm_password_resets_token_idx on public.pm_password_resets (token_hash);
 create index if not exists pm_password_resets_user_idx on public.pm_password_resets (user_id, created_at desc);
 create index if not exists pm_audit_logs_created_idx on public.pm_audit_logs (created_at desc);
@@ -280,6 +309,8 @@ alter table public.pm_inventory_blocks enable row level security;
 alter table public.pm_booking_updates enable row level security;
 alter table public.pm_notifications enable row level security;
 alter table public.pm_discounts enable row level security;
+alter table public.pm_assistant_conversations enable row level security;
+alter table public.pm_assistant_messages enable row level security;
 alter table public.pm_password_resets enable row level security;
 alter table public.pm_audit_logs enable row level security;
 alter table public.pm_booking_files enable row level security;

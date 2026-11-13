@@ -57,6 +57,18 @@ export const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 export const MAIL_FROM =
   process.env.MAIL_FROM || (IS_PROD ? '' : 'Precious Moments <no-reply@preciousmoments.ph>');
 
+// PRECIOUS uses any OpenAI-compatible chat-completions endpoint. Z.ai is the
+// supported default; leaving the key empty keeps the deterministic assistant.
+// The model only ever runs on this server and never receives database keys.
+export const AI_API_KEY = process.env.ZAI_API_KEY || process.env.AI_API_KEY || '';
+export const AI_BASE_URL = (
+  process.env.ZAI_API_BASE ||
+  process.env.AI_BASE_URL ||
+  'https://api.z.ai/api/paas/v4'
+).replace(/\/+$/, '');
+export const AI_MODEL = process.env.ZAI_MODEL || process.env.AI_MODEL || 'glm-5.3-flash';
+export const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS) || 15_000;
+
 // Product uploads are kept outside source control. Set UPLOAD_DIR on a host
 // with a persistent disk; the default is local development under public/.
 export const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || 'public/uploads/products');

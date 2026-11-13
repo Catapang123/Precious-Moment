@@ -279,7 +279,12 @@ availability (pickup, event, both, or unassigned).
 
 ## Assistant scope
 
-The dashboard's **Ask the studio** panel answers questions only from this system:
+The dashboard's **Ask the studio** panel is PRECIOUS. When `ZAI_API_KEY` is set it
+uses a hosted model through an OpenAI-compatible endpoint; without a key, or when
+the model errors, times out, exceeds its rate limit, or returns an unsafe draft, the
+deterministic answer engine handles the request instead.
+
+The AI is grounded in this system, never in general knowledge:
 
 - live service names, units, and starting prices;
 - the two branch records and studio hours;
@@ -290,11 +295,36 @@ The dashboard's **Ask the studio** panel answers questions only from this system
   head/owner's scope;
 - the customer's active discount.
 
-Anything outside that set returns exactly:
+Signed-in conversations are also saved in Supabase so a customer can reopen them
+from the clock button in the PRECIOUS panel. Every list, read, and write is scoped
+to the signed-in session's user id on the server; a customer id from the request
+is never trusted, and the owner/admin role has no override over another account's
+assistant messages. A conversation that belongs to someone else returns the same
+`404` as one that does not exist. The browser never reads the Supabase tables
+directly, and the model receives only recent turns from the owned conversation,
+never the transcript supplied by the browser.
+
+The server sends the model only the signed-in user's role-scoped context, recent turns
+from the same owned conversation, and a narrow `search_studio_data` tool. That tool
+calls the same deterministic engine and cannot
+accept a customer id or choose a database table. Supabase credentials, raw customer
+lists, and direct database access never leave the server.
+
+Before returning a model reply, the server rejects it when it contains a number,
+price, booking reference, email, phone number, or other customer's full name that is
+not present in the trusted context. It also rejects internal implementation details.
+The deterministic answer is then returned unchanged. The model cannot create, cancel,
+or change a booking, take a payment, or widen its role scope.
+
+If no scoped data answers the question, the assistant returns exactly:
 
 > Out of scope. Please ask another question.
 
-There is no external model call, so it cannot invent a price, a policy, or an answer.
+Run [supabase/migrate-assistant-history.sql](supabase/migrate-assistant-history.sql)
+once on an existing Supabase project. It only creates
+`pm_assistant_conversations`, `pm_assistant_messages`, and their indexes. Until it
+is applied, PRECIOUS still answers, but the panel reports that history is not
+available yet instead of saving a transcript.
 
 ---
 
@@ -330,8 +360,9 @@ npm ci
    [supabase/migrate-booking-availability.sql](supabase/migrate-booking-availability.sql),
    [supabase/migrate-catalog-images-auth.sql](supabase/migrate-catalog-images-auth.sql),
    [supabase/migrate-inventory.sql](supabase/migrate-inventory.sql), and
-   [supabase/migrate-logistics.sql](supabase/migrate-logistics.sql). Every migration is
-   additive and safe to re-run.
+   [supabase/migrate-logistics.sql](supabase/migrate-logistics.sql), and
+   [supabase/migrate-assistant-history.sql](supabase/migrate-assistant-history.sql).
+   Every migration is additive and safe to re-run.
 3. Create `.env` from [.env.example](.env.example) and fill in:
 
    ```
@@ -393,6 +424,10 @@ later starts; no sample bookings or customer accounts are created.
 | `PASSWORD_RESET_TTL_MINUTES` | `30`                   | Lifetime of a single-use reset link              |
 | `RESEND_API_KEY`            | —                       | Sends password-reset email through Resend        |
 | `MAIL_FROM`                 | `Precious Moments <no-reply@preciousmoments.ph>` | Verified sender for reset email |
+| `ZAI_API_KEY`               | —                       | Enables the hosted PRECIOUS model; without it the deterministic assistant stays active |
+| `ZAI_API_BASE`              | `https://api.z.ai/api/paas/v4` | OpenAI-compatible chat-completions base URL |
+| `ZAI_MODEL`                 | `glm-5.3-flash`         | Model used by PRECIOUS                           |
+| `AI_TIMEOUT_MS`             | `15000`                 | Model request deadline before deterministic fallback |
 | `BRANCH1_ADMIN_EMAIL`       | `batangas@precious.ph`  | Email used by `setup:branches` for branch 1       |
 | `BRANCH2_ADMIN_EMAIL`       | `bauan@precious.ph`     | Email used by `setup:branches` for branch 2       |
 
@@ -493,9 +528,11 @@ The repository includes a [Render blueprint](render.yaml).
    `render.yaml` and creates a Node web service with a health check at `/api/ready` (liveness is `/api/health`).
 3. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`,
    `APP_ORIGIN` (the public Render URL), `RESEND_API_KEY`, and `MAIL_FROM` (a sender on
-   a domain verified in Resend) in the service's environment. `SESSION_SECRET` is
-   generated by Render, and `TRUST_PROXY=1` is set in the blueprint. Production refuses
-   to start if a required variable is missing.
+   a domain verified in Resend) in the service's environment. Add `ZAI_API_KEY` there
+   to enable the hosted PRECIOUS model; the app keeps working with the deterministic
+   assistant until it is set. `SESSION_SECRET` is generated by Render, and
+   `TRUST_PROXY=1` is set in the blueprint. Production refuses to start if a required
+   variable is missing.
 4. Deploy. The first request seeds the service catalog if needed, and later releases
    add new products without changing existing rows.
 
@@ -522,7 +559,8 @@ server.js                 Express entrypoint
 server/app.js             REST API, sessions, RBAC, booking types, discounts, reports
 server/availability.js    Five-simultaneous-service capacity and next free slot
 server/inventory.js       Physical booth units, overlap checks, maintenance blocks, snapshot
-server/assistant.js       Grounded, scoped answers from system data only
+server/assistant.js       Deterministic, scoped answers from system data only
+server/ai.js              Hosted-model layer, scoped lookup tool, output guards, and fallback
 server/geo.js             Address geocoding and nearest-branch assignment
 server/store.js           Supabase (pm_ tables) or local JSON data layer
 server/seed.js            Catalog seed and test fixtures
@@ -600,7 +638,7 @@ send the raw image bytes with an `image/jpeg`, `image/png`, or `image/webp` cont
 | POST   | `/api/discounts`              | admin             | Assign or replace a customer discount    |
 | PATCH  | `/api/discounts/:id`          | admin             | Change value/note or activate/deactivate |
 | GET    | `/api/discounts/mine`         | customer          | The customer's own active discount       |
-| POST   | `/api/assistant`              | session           | Scoped answer from system data           |
+| POST   | `/api/assistant`              | session           | Hosted AI answer with deterministic fallback |
 | GET    | `/api/reports`                | admin             | JSON operations report for a period      |
 | GET    | `/api/reports.csv`            | admin             | CSV export of the same report            |
 | GET    | `/api/health`                 | public            | Liveness and store mode                  |
@@ -631,7 +669,9 @@ shared image permissions/validation/replacement/removal, hashed single-use passw
 resets with session revocation, client-rate confidentiality, cross-origin protection,
 deployment statuses, unit assignment and schedule validation, branch-scoped logistics
 calendars, real-data report trends, PDF/CSV exports, role-scoped inventory/logistics
-assistant answers, and CSV export. It exits non-zero on the first failure and leaves
+assistant answers, and CSV export. The separate AI guard checks use a mocked
+OpenAI-compatible endpoint to prove scoped tool lookup, rejected invented prices,
+and deterministic fallback. The suite exits non-zero on the first failure and leaves
 production data untouched.
 
 ---
