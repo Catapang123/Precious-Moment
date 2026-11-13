@@ -669,6 +669,16 @@ export default function App() {
     setAuthOpen(true);
   }
 
+  function requireCheckoutAuth() {
+    setCheckoutOpen(false);
+    setCartOpen(false);
+    setUser(null);
+    setPendingCheckout(true);
+    setAuthMode('signin');
+    setAuthReason('Your session expired. Sign in again to finish your booking. Your cart is saved.');
+    setAuthOpen(true);
+  }
+
   function handleAuthenticated(nextUser) {
     setUser(nextUser);
     setAuthOpen(false);
@@ -926,6 +936,7 @@ export default function App() {
         cart={cart}
         user={user}
         onClose={() => setCheckoutOpen(false)}
+        onRequireAuth={requireCheckoutAuth}
         onSuccess={bookingSuccess}
       />
 

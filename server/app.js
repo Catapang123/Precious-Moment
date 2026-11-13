@@ -587,7 +587,6 @@ function publicService(service) {
     'image_updated_at',
     'video_url',
     'video_mime',
-    'video_bytes',
     'video_updated_at',
     'catalog_visible',
     'round_dimensions_up',
@@ -1673,7 +1672,9 @@ export function createApp(store) {
         });
       } catch (error) {
         // Keep the old preview live if the database write fails.
-        await removeProductVideo(newPath);
+        await removeProductVideo(newPath).catch((cleanupError) =>
+          console.error('New product video cleanup failed:', cleanupError.message)
+        );
         throw error;
       }
       if (previous && previous !== newPath) {
@@ -3867,6 +3868,9 @@ export function createApp(store) {
     if (res.headersSent) return next(error);
     if (error?.type === 'entity.too.large' && req.path.endsWith('/image')) {
       return json(res, 413, { error: 'Image exceeds the 4 MB limit.' });
+    }
+    if (error?.type === 'entity.too.large' && req.path.endsWith('/video')) {
+      return json(res, 413, { error: 'Video exceeds the 25 MB limit.' });
     }
     const status = Number(error.status) || 500;
     if (status >= 500) console.error(error);

@@ -1479,6 +1479,21 @@ try {
   assert.equal(oversizedVideoUpload.status, 400);
   assert.equal(oversizedVideoUpload.body.error, 'Video exceeds the 25 MB limit.');
 
+  const unsupportedVideoType = await branch1('/api/services/booth-360/video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: 'not a video',
+  });
+  assert.equal(unsupportedVideoType.status, 415);
+
+  const tooLargeVideoUpload = await branch1('/api/services/booth-360/video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'video/mp4' },
+    body: Buffer.concat([sampleMp4(), Buffer.alloc(30 * 1024 * 1024)]),
+  });
+  assert.equal(tooLargeVideoUpload.status, 413);
+  assert.equal(tooLargeVideoUpload.body.error, 'Video exceeds the 25 MB limit.');
+
   const uploadedVideo = await branch1('/api/services/booth-360/video', {
     method: 'POST',
     headers: { 'Content-Type': 'video/mp4' },

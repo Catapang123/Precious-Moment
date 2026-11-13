@@ -6,7 +6,7 @@ function fieldValue(event) {
   return event.target.value;
 }
 
-export default function CheckoutModal({ open, cart, user, onClose, onSuccess }) {
+export default function CheckoutModal({ open, cart, user, onClose, onRequireAuth, onSuccess }) {
   const compatibility = useMemo(() => cartCompatibility(cart), [cart]);
   const [type, setType] = useState('pickup');
   const [branches, setBranches] = useState([]);
@@ -53,7 +53,12 @@ export default function CheckoutModal({ open, cart, user, onClose, onSuccess }) 
         }));
       })
       .catch((problem) => {
-        if (!cancelled) setBranchesError(problem.message || 'Branches could not load.');
+        if (cancelled) return;
+        if (problem?.status === 401 && onRequireAuth) {
+          onRequireAuth();
+          return;
+        }
+        setBranchesError(problem.message || 'Branches could not load.');
       });
     return () => {
       cancelled = true;
@@ -144,6 +149,10 @@ export default function CheckoutModal({ open, cart, user, onClose, onSuccess }) 
       if (!result.booking) throw new Error('The booking was saved but no confirmation was returned.');
       onSuccess(result.booking);
     } catch (problem) {
+      if (problem?.status === 401 && onRequireAuth) {
+        onRequireAuth();
+        return;
+      }
       setError(problem.message || 'We could not send that booking. Please try again.');
     } finally {
       setBusy(false);

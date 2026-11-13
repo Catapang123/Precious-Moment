@@ -295,7 +295,6 @@ const VIDEO_ERRORS = {
   size: 'Video exceeds the 25 MB limit.',
   upload: 'Unable to upload the video. Please check your connection and try again.',
 };
-const KNOWN_VIDEO_ERRORS = new Set(Object.values(VIDEO_ERRORS));
 
 const DESIGN_MAX_BYTES = 10 * 1024 * 1024;
 const DESIGN_MAX_FILES = 8;
@@ -3981,13 +3980,13 @@ function imageAdminCard(service) {
           </div>
           ${
             service.video_url
-              ? `<video class="image-admin-video-player" controls preload="none"${service.image_url ? ` poster="${esc(serviceImageUrl(service))}"` : ''} src="${esc(serviceVideoUrl(service))}"></video>`
+              ? `<video class="image-admin-video-player" controls preload="none" aria-label="${esc(service.name)} preview video"${service.image_url ? ` poster="${esc(serviceImageUrl(service))}"` : ''} src="${esc(serviceVideoUrl(service))}"></video>`
               : '<div class="image-admin-video-empty">No preview video yet.</div>'
           }
           <div class="image-admin-actions">
             <label class="btn btn-sm image-picker">
               ${service.video_url ? 'Replace video' : 'Upload video'}
-              <input type="file" accept="video/mp4,video/webm" data-video-input="${esc(service.id)}" hidden />
+              <input type="file" accept="video/mp4,video/webm,.mp4,.webm" data-video-input="${esc(service.id)}" hidden />
             </label>
             ${service.video_url ? `<button class="btn btn-sm btn-danger" type="button" data-video-remove="${esc(service.id)}">Remove video</button>` : ''}
             <span class="tiny muted" data-video-status></span>
@@ -4153,7 +4152,7 @@ async function uploadProductVideo(input) {
   };
   const lowerName = file.name.toLowerCase();
   const inferredType = lowerName.endsWith('.mp4') ? 'video/mp4' : lowerName.endsWith('.webm') ? 'video/webm' : '';
-  const type = file.type || inferredType;
+  const type = ['video/mp4', 'video/webm'].includes(file.type) ? file.type : inferredType;
   if (!['video/mp4', 'video/webm'].includes(type)) {
     reject(VIDEO_ERRORS.format);
     return;
@@ -4180,11 +4179,9 @@ async function uploadProductVideo(input) {
     const message =
       error?.status === 413
         ? VIDEO_ERRORS.size
-        : error?.status === 503
+        : [400, 415, 503].includes(error?.status) && error.message
           ? error.message
-          : [400, 415].includes(error?.status) && KNOWN_VIDEO_ERRORS.has(error.message)
-            ? error.message
-            : VIDEO_ERRORS.upload;
+          : VIDEO_ERRORS.upload;
     videoMessage(card, message);
     input.disabled = false;
     input.value = '';
