@@ -212,20 +212,24 @@ try {
   pass('the public catalog opens without a session and serves its compiled assets');
 
   const welcome = await publicSession('/welcome');
-  assert.equal(welcome.status, 200);
-  assert.match(welcome.body, /Keep the moment/);
+  assert.equal(welcome.status, 302);
+  assert.equal(welcome.headers.get('location'), '/shop');
   const loginPage = await publicSession('/login');
-  assert.equal(loginPage.status, 200);
-  assert.match(loginPage.body, /Create my account/);
-  assert.match(loginPage.body, /Crew records do not sign in/);
-  assert.match(loginPage.body, /Forgot your password\?/);
+  assert.equal(loginPage.status, 302);
+  assert.equal(loginPage.headers.get('location'), '/shop?auth=signin');
+  const registerRedirect = await publicSession('/login?mode=register&next=%2Fapp%23bookings');
+  assert.equal(registerRedirect.status, 302);
+  assert.equal(registerRedirect.headers.get('location'), '/shop?auth=register&next=%2Fapp%23bookings');
+  const expiredRedirect = await publicSession('/login?next=%2Fapp&expired=1');
+  assert.equal(expiredRedirect.status, 302);
+  assert.equal(expiredRedirect.headers.get('location'), '/shop?auth=signin&next=%2Fapp&expired=1');
   const forgotPage = await publicSession('/forgot-password');
   assert.equal(forgotPage.status, 200);
   assert.match(forgotPage.body, /Send reset link/);
   const resetPage = await publicSession('/reset-password');
   assert.equal(resetPage.status, 200);
   assert.match(resetPage.body, /Choose a new password/);
-  pass('the welcome page and sign-up/sign-in interface render');
+  pass('the old marketing and login URLs redirect to the shop');
   pass('every role sees the forgot-password entry point and both recovery pages render');
 
   const catalog = await publicSession('/api/services');

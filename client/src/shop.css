@@ -2229,22 +2229,6 @@ textarea.shop-input {
   text-align: center;
 }
 
-.auth-staff {
-  margin: 13px 0 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-  color: var(--ink-faint);
-  font-size: 0.55rem;
-  text-align: center;
-}
-
-.auth-staff a {
-  color: var(--rose-deep);
-  font-weight: 700;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
 .code-input {
   text-align: center;
   font-size: 1.35rem;

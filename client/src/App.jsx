@@ -24,6 +24,22 @@ import {
 } from './lib';
 import './shop.css';
 
+const AUTH_QUERY = new URLSearchParams(window.location.search);
+const AUTH_MODE_QUERY = AUTH_QUERY.get('auth');
+const AUTH_NEXT = (() => {
+  const raw = AUTH_QUERY.get('next') || '';
+  if (!raw) return '';
+  try {
+    const target = new URL(raw, window.location.origin);
+    if (target.origin !== window.location.origin) return '';
+    if (['/shop', '/shop/', '/login'].includes(target.pathname)) return '';
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return '';
+  }
+})();
+const AUTH_EXPIRED = AUTH_QUERY.get('expired') === '1';
+
 function Icon({ name, size = 20 }) {
   const paths = {
     arrow: <><path d="M5 12h14m-5-5 5 5-5 5" /></>,
@@ -411,7 +427,6 @@ function Header({ user, cartCount, onCart, onSignIn, onRegister, onLogout, onMen
           <a href="#catalog">The collection</a>
           <a href="#booths">Booths</a>
           <a href="#how">How it works</a>
-          <a href="/welcome">The studio</a>
         </nav>
         <div className="shop-nav-actions">
           {user ? (
@@ -459,7 +474,7 @@ function Footer() {
           <p>Made-to-keep prints, keepsakes, photo coverage, and booths in Batangas.</p>
         </div>
         <div><span>Explore</span><a href="#catalog">The collection</a><a href="#booths">Booths</a><a href="#how">How it works</a></div>
-        <div><span>Studio</span><a href="/welcome">About the studio</a><a href="/app">My dashboard</a><a href="/login?mode=login">Studio sign-in</a></div>
+        <div><span>Studio</span><a href="/shop#how">How it works</a><a href="/app">My dashboard</a><a href="/shop?auth=signin">Studio sign-in</a></div>
         <div><span>Visit</span><p>Batangas City · Bauan<br />Monday–Saturday, 9:00 AM–6:00 PM</p><p className="shop-footer-note">Prices in PHP. Final totals confirmed by the studio.</p></div>
       </div>
       <div className="shop-container shop-footer-bottom">
@@ -483,6 +498,7 @@ export default function App() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState('signin');
   const [authReason, setAuthReason] = useState('');
+  const [authRedirect, setAuthRedirect] = useState(AUTH_NEXT);
   const [pendingCheckout, setPendingCheckout] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [success, setSuccess] = useState(null);
@@ -505,6 +521,22 @@ export default function App() {
         if (cancelled) return;
         setCatalog({ services: catalogData.services || [], categories: catalogData.categories || [] });
         setUser(me.user || null);
+        if (me.user) {
+          if (AUTH_NEXT && AUTH_NEXT !== '/shop' && AUTH_NEXT !== '/shop/') {
+            window.location.replace(AUTH_NEXT);
+            return;
+          }
+          return;
+        }
+        if (AUTH_MODE_QUERY === 'signin' || AUTH_MODE_QUERY === 'register') {
+          setAuthMode(AUTH_MODE_QUERY);
+          setAuthReason(
+            AUTH_EXPIRED
+              ? 'Your session ended to keep your account safe. Sign in again and we will take you back to where you were.'
+              : ''
+          );
+          setAuthOpen(true);
+        }
       } catch (error) {
         if (!cancelled) setLoadError(error.message || 'The collection could not load.');
       } finally {
@@ -654,6 +686,7 @@ export default function App() {
     }
     if (!user) {
       setPendingCheckout(true);
+      setAuthRedirect('');
       setAuthMode('register');
       setAuthReason('Your cart is saved. Create an account to continue, or sign in if you already have one.');
       setAuthOpen(true);
@@ -664,6 +697,7 @@ export default function App() {
   }
 
   function openAuth(mode, reason = '') {
+    setAuthRedirect('');
     setAuthMode(mode);
     setAuthReason(reason);
     setAuthOpen(true);
@@ -674,6 +708,7 @@ export default function App() {
     setCartOpen(false);
     setUser(null);
     setPendingCheckout(true);
+    setAuthRedirect('');
     setAuthMode('signin');
     setAuthReason('Your session expired. Sign in again to finish your booking. Your cart is saved.');
     setAuthOpen(true);
@@ -683,6 +718,13 @@ export default function App() {
     setUser(nextUser);
     setAuthOpen(false);
     showToast(`Welcome, ${nextUser.name?.split(' ')[0] || 'friend'}.`);
+    if (nextUser.role === 'admin' || nextUser.role === 'branch_admin') {
+      window.location.assign(authRedirect || '/app');
+      return;
+    }
+    if (authRedirect) {
+      window.location.assign(authRedirect);
+    }
   }
 
   async function logout() {
@@ -732,7 +774,6 @@ export default function App() {
               <button type="button" onClick={() => jumpTo('all')}>The collection <Icon name="arrow" size={16} /></button>
               <button type="button" onClick={() => jumpTo('booths')}>Booths <Icon name="arrow" size={16} /></button>
               <a href="#how" onClick={() => setMobileOpen(false)}>How it works <Icon name="arrow" size={16} /></a>
-              <a href="/welcome">The studio <Icon name="arrow" size={16} /></a>
             </nav>
             <div className="mobile-nav-actions">
               {user ? (
@@ -927,7 +968,17 @@ export default function App() {
         open={authOpen}
         initialMode={authMode}
         reason={authReason}
-        onClose={() => { setAuthOpen(false); setPendingCheckout(false); }}
+        onClose={() => {
+          setAuthOpen(false);
+          setPendingCheckout(false);
+          setAuthRedirect('');
+          const url = new URL(window.location.href);
+          if (url.searchParams.has('auth') || url.searchParams.has('expired')) {
+            url.searchParams.delete('auth');
+            url.searchParams.delete('expired');
+            window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+          }
+        }}
         onSuccess={handleAuthenticated}
       />
 

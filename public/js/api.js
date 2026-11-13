@@ -8,8 +8,8 @@
  *     every template literal uses before inserting user data into HTML.
  *  3. UI primitives — the toast, the shared rate-card markup, and debounce.
  *
- * Imported by `app.js` (dashboard), `home.js` (marketing page), and `auth.js`
- * (sign in / sign up). It has no DOM requirement beyond `document` existing.
+ * Imported by `app.js` (dashboard) and `password-reset.js`. It has no DOM
+ * requirement beyond `document` existing.
  */
 
 // Counts in-flight requests so the progress bar stays visible while several
@@ -432,8 +432,8 @@ export function serviceTierSummary(service = {}) {
 /**
  * Renders the full rate card from the `/api/services` payload.
  *
- * Shared by the marketing page (`home.js`) and the dashboard dialog (`app.js`)
- * so a price change appears in both places with no second copy of the markup.
+ * Shared by the dashboard dialog (`app.js`) so a price change appears in one
+ * place with no second copy of the markup.
  * Returns '' when the catalog is empty, letting the caller show its own
  * loading or error state.
  */

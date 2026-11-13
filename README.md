@@ -264,7 +264,7 @@ Existing Supabase projects must run
 first upload; it only adds the five optional video columns.
 
 The owner edits retail prices from **Pricing** in the dashboard; the changes apply to
-the marketing rate card, booking form, checkout, assistant, and all new bookings. The
+the shop catalog, booking form, checkout, assistant, and all new bookings. The
 client-specific tarpaulin and standee rates are stored separately (`CLIENT_PRICES`),
 shown on the same page, and never overwrite a retail price. Existing bookings keep the
 name and price they were booked at. When the catalog source changes, run
@@ -344,12 +344,10 @@ available yet instead of saving a transcript.
 | URL | What it does |
 | --- | --- |
 | `/` | Signed out: redirects to the public `/shop` catalog. Signed in: `/app` |
-| `/shop` | React public catalog, cart, account gate, and booking request |
-| `/login` | Sign-up is the default tab; `?mode=login` opens sign-in |
-| `/welcome` | The public marketing page and rate card |
+| `/shop` | Public catalog, cart, account sign-in/sign-up, and booking request |
 | `/app` | Customer, branch head, and owner dashboard (sign-in required) |
 
-Crew cannot sign in. The sign-in page says so, and the server refuses any staff-role
+Crew cannot sign in. The shop sign-in says so, and the server refuses any staff-role
 login with a clear message.
 
 ---
@@ -409,8 +407,9 @@ Build the storefront once (or after changing files under `client/`):
 npm run build:shop
 ```
 
-Then open <http://localhost:3000>. That lands on the public catalog at `/shop`. The
-rate card and marketing page are at `/welcome`; sign-up and sign-in are at `/login`.
+Then open <http://localhost:3000>. That lands on the public catalog at `/shop`, where
+customers and studio staff sign in or create an account. The old `/login` and
+`/welcome` URLs redirect to the shop.
 The product catalog is seeded on first start and newly released products are added on
 later starts; no sample bookings or customer accounts are created.
 
@@ -473,7 +472,7 @@ for the automated test suite and offline development; use Supabase for the real 
 - Any signed-in account can change its password from **Account & security** by supplying
   the current one.
 - If a password is forgotten, any customer, branch head, or owner can use **Forgot your
-  password?** on the sign-in page. The backend always returns the same message so it
+  password?** in the shop sign-in. The backend always returns the same message so it
   cannot be used to discover registered emails. A 32-byte random token is stored only as
   an HMAC hash, expires after `PASSWORD_RESET_TTL_MINUTES` (30 by default), can be used
   once, and is checked again when the new password is saved. A successful reset revokes
@@ -590,7 +589,7 @@ supabase/migrate-pricing.sql   Quantity breaks, setup fees, capacity, and review
 supabase/migrate-booking-availability.sql  Booking availability and product-management fields
 supabase/migrate-catalog-images-auth.sql  Images, measured pricing, resets, and audit logs
 supabase/migrate-inventory.sql  Additive physical inventory and maintenance-block table
-public/                   Marketing page, auth page, dashboards, styles, JS
+public/                   Shop build, dashboard, recovery pages, styles, JS
 scripts/bootstrap.mjs     First administrator
 scripts/setup-branches.mjs  The two branch administrator accounts
 scripts/report.mjs        Node report CLI
@@ -723,7 +722,7 @@ production data untouched.
 - Report exports are CSV, PDF, and PNG. Scheduled delivery is a GitHub Actions artifact,
   not email. The PDF/PNG are operational summaries; the CSV remains the complete
   row-level export.
-- Photographs on the landing and sign-in pages are from Unsplash, and contact details
+- Photographs used across the public pages are from Unsplash, and contact details
   such as `hello@preciousmoments.ph` are placeholders. Prices come from the studio's
   2026 price sheet; conflicting workbook values and services not on the sheet are
   flagged on the Pricing page for owner confirmation.

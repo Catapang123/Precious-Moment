@@ -3851,10 +3851,30 @@ export function createApp(store) {
     if (req.user) return res.redirect('/app');
     res.redirect('/shop');
   });
-  app.get('/welcome', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+  // The shop is the single public entry point now. Keep the old marketing and
+  // login URLs as redirects so bookmarks, password-reset emails, and old links
+  // still land somewhere useful instead of the 404 page.
+  app.get('/welcome', (req, res) => res.redirect('/shop'));
   app.get('/login', (req, res) => {
-    if (req.user) return res.redirect('/app');
-    res.sendFile(path.join(PUBLIC_DIR, 'auth.html'));
+    const params = new URLSearchParams();
+    const expired = req.query.expired === '1';
+    params.set('auth', expired || req.query.mode !== 'register' ? 'signin' : 'register');
+    const next = String(req.query.next || '');
+    if (next) {
+      try {
+        const target = new URL(next, 'http://shop.local');
+        if (
+          target.origin === 'http://shop.local' &&
+          !['/shop', '/shop/', '/login'].includes(target.pathname)
+        ) {
+          params.set('next', `${target.pathname}${target.search}${target.hash}`);
+        }
+      } catch {
+        // Ignore a malformed next path and fall back to the shop.
+      }
+    }
+    if (expired) params.set('expired', '1');
+    res.redirect(`/shop?${params.toString()}`);
   });
   app.get('/forgot-password', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'forgot-password.html')));
   app.get('/reset-password', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reset-password.html')));

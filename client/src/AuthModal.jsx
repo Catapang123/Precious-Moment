@@ -191,13 +191,13 @@ export default function AuthModal({ open, initialMode = 'register', reason = '',
           </>
         ) : (
           <>
-            <p className="eyebrow">Checkout account</p>
-            <h2 id="auth-title">{mode === 'register' ? 'Create an account to continue.' : 'Welcome back.'}</h2>
+            <p className="eyebrow">Precious Moments account</p>
+            <h2 id="auth-title">{mode === 'register' ? 'Create an account.' : 'Sign in.'}</h2>
             <p className="auth-lead">
               {reason ||
                 (mode === 'register'
-                  ? 'Your cart is saved. Create an account to confirm the booking and keep track of every update.'
-                  : 'Sign in to finish your booking. Your cart will still be here.')}
+                  ? 'Create an account to book, follow updates, and keep every detail in one place.'
+                  : 'Sign in to see your bookings, updates, and payment records.')}
             </p>
 
             <div className="auth-tabs" role="tablist" aria-label="Account action">
@@ -321,9 +321,6 @@ export default function AuthModal({ open, initialMode = 'register', reason = '',
                   </button>
                 </>
               )}
-            </p>
-            <p className="auth-staff">
-              Studio owner or branch head? <a href="/login?mode=login">Use the dashboard sign-in</a>.
             </p>
           </>
         )}

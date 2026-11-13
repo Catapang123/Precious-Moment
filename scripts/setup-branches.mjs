@@ -95,7 +95,7 @@ const body = [
   `Generated ${new Date().toISOString()} (${STORE_MODE} store)`,
   '',
   ...written.flatMap((entry) => [`${entry.label}`, `  email:    ${entry.email}`, `  password: ${entry.password}`, '']),
-  'Sign in at /login. Change these in the database when the studio takes over.',
+  'Sign in at /shop. Change these in the database when the studio takes over.',
   '',
 ].join('\n');
 fs.writeFileSync(file, body, { mode: 0o600 });

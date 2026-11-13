@@ -16,7 +16,7 @@ Say this before you touch the keyboard:
 > right branch. Only that branch's head is alerted. Crew don't get logins — they're
 > assignment records."
 
-Then open `/welcome`: **prices are public**, so customers arrive already knowing the cost.
+Then open `/shop`: **prices are public**, so customers arrive already knowing the cost.
 
 ## 2. The flow, in one picture
 
@@ -55,7 +55,7 @@ come from the database; create a fresh customer during the demo instead.
 ## 4. Before the call — 10-minute checklist
 
 1. In the VS Code terminal: `npm start`, then open <http://localhost:3000>. That opens
-   the sign-up screen. The rate card is at `/welcome`.
+   the shop; the account buttons in the header open the single sign-in/sign-up form.
 2. Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> so the browser isn't using cached
    files. Zoom to ~110% (<kbd>Ctrl</kbd>+<kbd>+</kbd>).
 3. **Create one crew record for each branch** (owner → **Team** → Add crew). There is no

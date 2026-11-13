@@ -106,14 +106,10 @@ No build step and no framework: ES modules are served directly.
 
 | File | Responsibility | Connects to |
 | --- | --- | --- |
-| `index.html` | Marketing page markup (`/welcome`). Prices render into `#price-board`. | `js/home.js`, `css/styles.css` |
-| `auth.html` | Sign-in / sign-up / two-factor panels (`/login`). | `js/auth.js` |
 | `app.html` | Dashboard shell: sidebar, header, `#view`, drawer and modal roots. | `js/app.js` |
 | `404.html` | Not-found page used by the Express fallback. | `css/styles.css` |
-| `css/styles.css` | All styling, in three runs: marketing, dashboard, motion. Tokens in `:root`. | every page |
-| `js/api.js` | Shared fetch wrapper, formatters, escaping, toast, rate-card markup. | all three page scripts |
-| `js/home.js` | Rate board, mobile nav, personalised links. | `/api/services`, `/api/auth/me` |
-| `js/auth.js` | Panel switching, client validation, three form submissions. | `/api/auth/*` |
+| `css/styles.css` | Shared dashboard, recovery, and motion styling. Tokens in `:root`. | every page |
+| `js/api.js` | Shared fetch wrapper, formatters, escaping, toast, rate-card markup. | `js/app.js`, `js/password-reset.js` |
 | `js/app.js` | The whole dashboard: views per role, booking flow, drawer, events. | every API route |
 
 ### `js/app.js` layout

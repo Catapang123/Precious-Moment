@@ -1264,7 +1264,7 @@ function renderBookView() {
       <div><h2>Build your booking</h2><p>Choose what you need, then tell us whether it is an event or a pickup.</p></div>
       <div class="page-actions">
         <button class="btn btn-danger" type="button" data-cart-clear ${state.cart.length ? '' : 'hidden'}>Clear selection</button>
-        <a class="btn" href="/welcome#prices">View full rate card</a>
+        <a class="btn" href="/shop#catalog">View full rate card</a>
       </div>
     </div>
     <div class="book-grid">
@@ -3890,7 +3890,7 @@ function renderAdminImages() {
   viewRoot.innerHTML = `
     <div class="page-intro">
       <div><h2>The shared catalog, picture and motion</h2><p>Main Admin and Branch Admin changes apply to every customer screen. Add a short booth preview video so customers can see the experience before they book.</p></div>
-      <div class="page-actions"><a class="btn" href="/welcome#prices" target="_blank" rel="noopener">View public catalog</a></div>
+      <div class="page-actions"><a class="btn" href="/shop#catalog" target="_blank" rel="noopener">View public catalog</a></div>
     </div>
     <div class="stats-strip">
       <div class="stat-cell"><span>All products</span><strong>${stats.total || services.length}</strong><small>Across every category</small></div>
@@ -4453,7 +4453,7 @@ function renderAdminPricing() {
       <div class="page-actions">
         <button class="btn btn-primary" type="button" data-new-service>${state.newProductOpen ? 'Close form' : '+ Add product'}</button>
         <button class="btn" type="button" data-nav="images">Product media${missingImages ? ` · ${missingImages} needed` : ''}</button>
-        <a class="btn" href="/welcome#prices" target="_blank" rel="noopener">View public rate card</a>
+        <a class="btn" href="/shop#catalog" target="_blank" rel="noopener">View public rate card</a>
       </div>
     </div>
     <div class="stats-strip">
@@ -6309,7 +6309,7 @@ document.addEventListener('click', async (event) => {
     try {
       await api('/api/auth/logout', { method: 'POST', body: '{}' });
     } finally {
-      window.location.replace('/login');
+      window.location.replace('/shop');
     }
     return;
   }
@@ -6852,7 +6852,7 @@ document.addEventListener('click', async (event) => {
   if (target.closest('[data-state-primary]')) {
     const action = target.closest('[data-state-primary]').dataset.statePrimary;
     if (action === 'signin') {
-      window.location.href = `/login?next=${encodeURIComponent(`/app#${state.view}`)}&expired=1`;
+      window.location.href = `/shop?auth=signin&next=${encodeURIComponent(`/app#${state.view}`)}&expired=1`;
       return;
     }
     if (action === 'back') {
@@ -7387,13 +7387,13 @@ window.addEventListener('hashchange', () => {
  * Boots the dashboard: confirms the session, loads every collection the role is
  * allowed to see in one parallel batch, then renders the view named in the hash.
  * A failure here replaces the page with a retry message rather than a blank
- * screen, and a signed-out visitor is sent to `/login?next=/app`.
+ * screen, and a signed-out visitor is sent back to the shop sign-in.
  */
 async function init() {
   try {
     const user = await getCurrentUser();
     if (!user) {
-      window.location.replace('/login?next=/app');
+      window.location.replace('/shop?auth=signin&next=/app');
       return;
     }
     state.user = user;
@@ -7465,7 +7465,7 @@ async function init() {
         <p>${esc(info.message)}</p>
         <div class="no-results-actions">
           <button class="btn btn-primary" type="button" data-reload>${esc(info.action)}</button>
-          ${info.kind === 'unauthorized' ? '<a class="btn" href="/login?next=/app">Sign in</a>' : ''}
+          ${info.kind === 'unauthorized' ? '<a class="btn" href="/shop?auth=signin&next=/app">Sign in</a>' : ''}
         </div>
       </div>`;
   }
