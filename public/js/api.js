@@ -77,17 +77,19 @@ function announce(name, detail = {}) {
 export async function api(path, options = {}) {
   activeRequests += 1;
   setRequestBar(true);
-  const controller = options.signal ? null : new AbortController();
+  const timeoutAfter = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : TIMEOUT_AFTER;
+  const { timeoutMs, ...requestOptions } = options;
+  const controller = requestOptions.signal ? null : new AbortController();
   const slowTimer = setTimeout(() => announce('pm:slow', { path }), SLOW_AFTER);
   const timeoutTimer = controller
-    ? setTimeout(() => controller.abort('timeout'), TIMEOUT_AFTER)
+    ? setTimeout(() => controller.abort('timeout'), timeoutAfter)
     : null;
 
   try {
     const response = await fetch(path, {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-      ...options,
+      ...requestOptions,
       ...(controller ? { signal: controller.signal } : {}),
     });
 

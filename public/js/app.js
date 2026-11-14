@@ -4170,6 +4170,7 @@ async function uploadProductVideo(input) {
       method: 'POST',
       headers: { 'Content-Type': type },
       body: file,
+      timeoutMs: 120000,
     });
     replaceServiceInState(service);
     toast(`${service.name} preview video saved.`);
