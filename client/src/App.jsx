@@ -1,4 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import AnimatedList from './components/AnimatedList.jsx';
+import CircularCarousel from './components/CircularCarousel.jsx';
+import MagicBento from './components/MagicBento.jsx';
+import SpecularButton from './components/SpecularButton.jsx';
 import AuthModal from './AuthModal.jsx';
 import CheckoutModal from './CheckoutModal.jsx';
 import useDialogFocus from './useDialogFocus';
@@ -66,6 +70,83 @@ function Icon({ name, size = 20 }) {
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       {paths[name] || null}
     </svg>
+  );
+}
+
+const LOCAL_PREVIEW = typeof window !== 'undefined' && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+
+function stableImageUrl(service) {
+  const source = serviceImageUrl(service);
+  if (!source) return '';
+  // Hosted uploads live in Supabase. Legacy local /uploads paths are kept for
+  // local development, where they are served from disk, but would 404 on Render.
+  if (source.startsWith('/uploads/') && !LOCAL_PREVIEW) return '';
+  return source;
+}
+
+const HOW_STEPS = [
+  {
+    number: '01',
+    icon: 'bag',
+    title: 'Browse & build your cart',
+    copy: 'Explore the live collection without an account. Your cart stays saved on this device.'
+  },
+  {
+    number: '02',
+    icon: 'calendar',
+    title: 'Send the date',
+    copy: 'Create an account only when you’re ready. Tell us the event or pickup details and send one request.'
+  },
+  {
+    number: '03',
+    icon: 'check',
+    title: 'The studio confirms',
+    copy: 'We check the calendar, physical booth units, and final pricing, then send the 50% reservation details.'
+  }
+];
+
+function ProcessBento() {
+  const items = HOW_STEPS.map((step) => ({
+    id: step.number,
+    content: (
+      <div className="how-bento-card">
+        <div className="how-bento-top">
+          <span className="how-bento-number">{step.number}</span>
+          <span className="how-bento-icon"><Icon name={step.icon} size={19} /></span>
+        </div>
+        <h3>{step.title}</h3>
+        <p>{step.copy}</p>
+        <span className="how-bento-line" aria-hidden="true" />
+      </div>
+    )
+  }));
+  return (
+    <MagicBento
+      items={items}
+      columns={3}
+      rowHeight={236}
+      gap={14}
+      radius={22}
+      theme="dark"
+      glowColor="#f0559b"
+      enableBorderGlow
+      enableSpotlight
+      spotlightRadius={240}
+      intro
+      textAutoHide={false}
+      clickEffect={false}
+      className="how-bento"
+      style={{
+        '--mb-surface': 'linear-gradient(160deg, #1a0e16 0%, #120910 100%)',
+        '--mb-edge': 'rgba(255, 170, 206, 0.14)',
+        '--mb-highlight': 'rgba(255, 255, 255, 0.06)',
+        '--mb-ink': 'var(--ink)',
+        '--mb-muted': 'var(--ink-soft)',
+        '--mb-focus': 'var(--rose)',
+        '--mb-glow-alpha': 0.7,
+        '--mb-spot-alpha': 0.06
+      }}
+    />
   );
 }
 
@@ -299,7 +380,7 @@ function ProductModal({ service, onClose, onAdd }) {
   );
 }
 
-function CartDrawer({ open, cart, user, onClose, onQuantity, onRemove, onCheckout, compatibility }) {
+function CartDrawer({ open, cart, user, onClose, onQuantity, onRemove, onCheckout, compatibility, suggestions = [], onSuggest }) {
   const total = cart.reduce((sum, line) => sum + Number(line.estimate || 0), 0);
   const count = cart.reduce((sum, line) => sum + (line.pricing_mode === 'area' ? 1 : Number(line.qty) || 0), 0);
   const dialog = useRef(null);
@@ -345,6 +426,47 @@ function CartDrawer({ open, cart, user, onClose, onQuantity, onRemove, onCheckou
                   </div>
                 </article>
               ))}
+              {suggestions.length ? (
+                <section className="cart-suggestions" aria-labelledby="cart-suggestions-title">
+                  <div className="cart-suggestions-head">
+                    <p className="eyebrow" id="cart-suggestions-title">A little more to love</p>
+                    <span>Opens details without losing your cart</span>
+                  </div>
+                  <AnimatedList
+                    items={suggestions}
+                    onItemSelect={(item) => onSuggest?.(item.service)}
+                    ariaLabel="Suggestions to add to your cart"
+                    animation="fade"
+                    animateOnce
+                    selectOnHover={false}
+                    showGradients={false}
+                    displayScrollbar={false}
+                    frame={false}
+                    theme="dark"
+                    accentColor="#f0559b"
+                    radius={12}
+                    gap={6}
+                    width="100%"
+                    maxHeight={300}
+                    stagger={0.04}
+                    className="cart-suggestions-list"
+                    style={{
+                      '--al-tile': 'rgba(255, 255, 255, 0.035)',
+                      '--al-tile-edge': 'rgba(255, 170, 206, 0.12)',
+                      '--al-tile-highlight': 'rgba(255, 255, 255, 0.05)',
+                      '--al-tile-shadow': 'none',
+                      '--al-well': 'rgba(255, 255, 255, 0.04)',
+                      '--al-ink': 'var(--ink)',
+                      '--al-muted': 'var(--ink-faint)',
+                      '--al-ring': 'var(--rose)',
+                      '--al-ring-fill': 'rgba(240, 85, 155, 0.08)',
+                      '--al-hover': 'brightness(1.18)',
+                      '--al-active': 'brightness(1.08)',
+                      '--al-press': 'brightness(0.9)'
+                    }}
+                  />
+                </section>
+              ) : null}
             </div>
             <div className="cart-foot">
               {!compatibility.ok ? <p className="shop-error shop-error--panel">{compatibility.reason}</p> : null}
@@ -675,6 +797,61 @@ export default function App() {
   const cartCount = cart.reduce((sum, line) => sum + (line.pricing_mode === 'area' ? 1 : Number(line.qty) || 0), 0);
   const cartTotal = cart.reduce((sum, line) => sum + Number(line.estimate || 0), 0);
 
+  const reelItems = useMemo(() => {
+    const candidates = [...services]
+      .sort((a, b) => Number(b.popular) - Number(a.popular) || Number(a.sort || 0) - Number(b.sort || 0))
+      .map((service) => ({
+        id: service.id,
+        src: stableImageUrl(service),
+        alt: service.image_alt || `${service.name} from the Precious Moments studio`,
+        title: service.name,
+        subtitle: service.category,
+        service
+      }))
+      .filter((item) => item.src);
+    const picks = [];
+    const categories = new Set();
+    for (const item of candidates) {
+      if (picks.length >= 8) break;
+      if (categories.has(item.subtitle)) continue;
+      categories.add(item.subtitle);
+      picks.push(item);
+    }
+    if (picks.length < 4) {
+      const used = new Set(picks.map((item) => item.id));
+      for (const item of candidates) {
+        if (picks.length >= 8) break;
+        if (used.has(item.id)) continue;
+        used.add(item.id);
+        picks.push(item);
+      }
+    }
+    return picks;
+  }, [services]);
+
+  const cartSuggestions = useMemo(() => {
+    if (!cart.length || !compatibility.ok) return [];
+    const inCart = new Set(cart.map((line) => line.service_id));
+    const only = compatibility.event && !compatibility.pickup ? 'event' : compatibility.pickup && !compatibility.event ? 'pickup' : '';
+    return [...services]
+      .filter((service) => !inCart.has(service.id) && service.booking_availability !== 'unassigned')
+      .filter((service) => !only || supportsType(service, only))
+      .sort((a, b) => Number(b.popular) - Number(a.popular) || Number(a.sort || 0) - Number(b.sort || 0))
+      .slice(0, 4)
+      .map((service) => {
+        const image = stableImageUrl(service);
+        const qty = Math.max(1, Number(service.min_qty) || 1);
+        return {
+          id: service.id,
+          title: service.name,
+          description: service.category,
+          meta: service.pricing_mode === 'area' ? `${money(service.price)}/${service.dimension_unit || 'ft'}` : money(priceForQty(service, qty)),
+          ...(image ? { image } : { icon: <Icon name="spark" size={16} /> }),
+          service
+        };
+      });
+  }, [cart, compatibility, services]);
+
   function lineFromService(service, { qty, width, height, estimate }) {
     return {
       key: cartLineKey(service.id, width, height),
@@ -882,9 +1059,26 @@ export default function App() {
                 No account needed to explore — we’ll only ask when you’re ready to confirm.
               </p>
               <div className="hero-actions">
-                <button className="shop-button shop-button--primary shop-button--large" type="button" onClick={() => jumpTo('all')}>
+                <SpecularButton
+                  size="md"
+                  radius={999}
+                  tint="#f0559b"
+                  tintOpacity={0.22}
+                  textColor="#fff7fb"
+                  lineColor="#ffc0d8"
+                  baseColor="#7a344f"
+                  intensity={1.15}
+                  idleIntensity={0.4}
+                  shineSize={16}
+                  shineFade={46}
+                  thickness={1.5}
+                  glow={1}
+                  proximity={260}
+                  className="hero-specular"
+                  onClick={() => jumpTo('all')}
+                >
                   Explore the collection <Icon name="arrow" size={18} />
-                </button>
+                </SpecularButton>
                 <button className="shop-button shop-button--large" type="button" onClick={() => jumpTo('booths')}>
                   <Icon name="camera" size={18} /> Meet the booths
                 </button>
@@ -925,6 +1119,40 @@ export default function App() {
             <span><Icon name="clock" size={16} /> Pickup ready in 1–2 days</span>
           </div>
         </section>
+
+        {!loading && reelItems.length >= 3 ? (
+          <section className="shop-reel" aria-labelledby="reel-title">
+            <div className="shop-container">
+              <div className="reel-head" data-reveal>
+                <div>
+                  <p className="eyebrow">A look around the studio</p>
+                  <h2 id="reel-title">Pieces with a <em>little more heart.</em></h2>
+                </div>
+                <p className="reel-note">Real prints, keepsakes, and booth setups from Batangas. Drag the ring or open a piece to see its details.</p>
+              </div>
+              <div className="reel-stage">
+                <CircularCarousel
+                  items={reelItems}
+                  preset="cylinder"
+                  intro="rise"
+                  cardWidth={210}
+                  aspectRatio={0.78}
+                  gap={22}
+                  autoplay={product ? 'off' : 'drift'}
+                  speed={8}
+                  direction="left"
+                  pauseOnHover
+                  captions
+                  cornerRadius={16}
+                  fadeColor="#080508"
+                  onItemClick={(item) => {
+                    if (item?.service) setProduct(item.service);
+                  }}
+                />
+              </div>
+            </div>
+          </section>
+        ) : null}
 
         <section className="shop-catalog" id="catalog">
           <div className="shop-container">
@@ -1005,11 +1233,7 @@ export default function App() {
         <section className="shop-how" id="how">
           <div className="shop-container">
             <div className="how-head" data-reveal><p className="eyebrow">A simple, careful process</p><h2>From “I love that” to <em>“it’s ours.”</em></h2></div>
-            <div className="how-grid" data-reveal>
-              <article><span>01</span><h3>Browse &amp; build your cart</h3><p>Explore the live collection without an account. Your cart stays saved on this device.</p></article>
-              <article><span>02</span><h3>Send the date</h3><p>Create an account only when you’re ready. Tell us the event or pickup details and send one request.</p></article>
-              <article><span>03</span><h3>The studio confirms</h3><p>We check the calendar, physical booth units, and final pricing, then send the 50% reservation details.</p></article>
-            </div>
+            <ProcessBento />
           </div>
         </section>
       </main>
@@ -1031,6 +1255,8 @@ export default function App() {
         onRemove={removeLine}
         onCheckout={beginCheckout}
         compatibility={compatibility}
+        suggestions={cartSuggestions}
+        onSuggest={setProduct}
       />
 
       {product ? (

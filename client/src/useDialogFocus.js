@@ -9,12 +9,19 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+// All shop dialogs share one overlay z-index, so document order is visual order.
+function topmostDialog() {
+  const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')];
+  return dialogs[dialogs.length - 1] || null;
+}
+
 /**
- * Keeps keyboard focus inside an open dialog, moves focus into it on open,
- * restores the trigger on close, and calls `onEscape` for the Escape key.
+ * Keeps keyboard focus inside the topmost open dialog, moves focus into it on
+ * open, restores the trigger on close, and calls `onEscape` for Escape. A lower
+ * dialog ignores both keys until the dialog above it closes.
  * The visible CSS still owns all motion, so this stays dependency-free.
  */
-export default function useDialogFocus(active, dialogRef, onEscape) {
+export default function useDialogFocus(active, dialogRef, onEscape, initialFocusRef) {
   const escapeRef = useRef(onEscape);
   escapeRef.current = onEscape;
 
@@ -25,9 +32,9 @@ export default function useDialogFocus(active, dialogRef, onEscape) {
 
     const focusIntoDialog = () => {
       if (!dialog.isConnected || dialog.contains(document.activeElement)) return;
-      const topDialog = document.querySelector('[role="dialog"][aria-modal="true"]');
-      if (topDialog && topDialog !== dialog) return;
-      const preferred = dialog.querySelector('[data-autofocus]');
+      if (topmostDialog() !== dialog) return;
+      const requested = initialFocusRef?.current;
+      const preferred = requested?.isConnected ? requested : dialog.querySelector('[data-autofocus]');
       const first = preferred || dialog.querySelector(FOCUSABLE) || dialog;
       if (first === dialog && !dialog.hasAttribute('tabindex')) dialog.setAttribute('tabindex', '-1');
       first.focus({ preventScroll: true });
@@ -40,6 +47,7 @@ export default function useDialogFocus(active, dialogRef, onEscape) {
     const settle = window.setTimeout(focusIntoDialog, 90);
 
     const onKey = (event) => {
+      if (topmostDialog() !== dialog) return;
       if (event.key === 'Escape') {
         if (escapeRef.current) {
           event.preventDefault();
@@ -78,13 +86,20 @@ export default function useDialogFocus(active, dialogRef, onEscape) {
       window.clearTimeout(settle);
       document.removeEventListener('keydown', onKey);
       // Let a newly opened dialog (cart → checkout, checkout → success) claim
-      // focus first; only return focus when the page is the active surface.
+      // focus first. When a lower dialog remains, return to the control that
+      // opened the top dialog instead of leaving focus on a removed element.
       window.setTimeout(() => {
-        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+        const remaining = topmostDialog();
+        if (remaining) {
+          if (previous instanceof HTMLElement && previous.isConnected && remaining.contains(previous)) {
+            previous.focus({ preventScroll: true });
+          }
+          return;
+        }
         if (previous instanceof HTMLElement && previous.isConnected && !dialog.contains(previous)) {
           previous.focus({ preventScroll: true });
         }
       }, 0);
     };
-  }, [active, dialogRef]);
+  }, [active, dialogRef, initialFocusRef]);
 }

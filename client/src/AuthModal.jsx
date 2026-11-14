@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from './api';
+import useDialogFocus from './useDialogFocus';
 
 const PASSWORD_RULES = [
   ['At least 10 characters', (value) => value.length >= 10],
@@ -37,33 +38,9 @@ export default function AuthModal({ open, initialMode = 'register', reason = '',
     setBusy(false);
     setCode('');
     setShowPassword(false);
-    const timer = window.setTimeout(() => firstField.current?.focus(), 80);
-    return () => window.clearTimeout(timer);
   }, [open, initialMode]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event) => {
-      if (event.key === 'Escape' && !busy) onClose();
-      if (event.key === 'Tab' && dialog.current) {
-        const focusable = dialog.current.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])'
-        );
-        if (!focusable.length) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, busy, onClose]);
+  useDialogFocus(open, dialog, busy ? undefined : onClose, firstField);
 
   if (!open) return null;
 
