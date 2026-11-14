@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import AnimatedList from './components/AnimatedList.jsx';
-import CircularCarousel from './components/CircularCarousel.jsx';
+import DomeGallery from './components/DomeGallery.jsx';
 import MagicBento from './components/MagicBento.jsx';
 import SpecularButton from './components/SpecularButton.jsx';
 import AuthModal from './AuthModal.jsx';
@@ -1128,26 +1128,27 @@ export default function App() {
                   <p className="eyebrow">A look around the studio</p>
                   <h2 id="reel-title">Pieces with a <em>little more heart.</em></h2>
                 </div>
-                <p className="reel-note">Real prints, keepsakes, and booth setups from Batangas. Drag the ring or open a piece to see its details.</p>
+                <p className="reel-note">Real prints, keepsakes, and booth setups from Batangas. Drag the dome to spin it, then open a photo to see it up close.</p>
               </div>
               <div className="reel-stage">
-                <CircularCarousel
-                  items={reelItems}
-                  preset="cylinder"
-                  intro="rise"
-                  cardWidth={210}
-                  aspectRatio={0.78}
-                  gap={22}
-                  autoplay={product ? 'off' : 'drift'}
-                  speed={8}
-                  direction="left"
-                  pauseOnHover
-                  captions
-                  cornerRadius={16}
-                  fadeColor="#080508"
-                  onItemClick={(item) => {
-                    if (item?.service) setProduct(item.service);
-                  }}
+                <DomeGallery
+                  images={reelItems}
+                  fit={0.5}
+                  fitBasis="auto"
+                  minRadius={280}
+                  maxRadius={900}
+                  padFactor={0.08}
+                  overlayBlurColor="#080508"
+                  maxVerticalRotationDeg={8}
+                  dragSensitivity={24}
+                  enlargeTransitionMs={300}
+                  segments={35}
+                  dragDampening={0.65}
+                  openedImageWidth="min(420px, 76vw)"
+                  openedImageHeight="min(500px, 64vh)"
+                  imageBorderRadius="14px"
+                  openedImageBorderRadius="18px"
+                  grayscale={false}
                 />
               </div>
             </div>

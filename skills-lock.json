@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "skills": {
+    "accessible-animation": {
+      "source": "iart-ai/web-animation-skills",
+      "sourceType": "github",
+      "skillPath": "skills/accessible-animation/SKILL.md",
+      "computedHash": "396a43fbb461daa4cb93a2795910459ae96c82937f965906b2b84f2703aef76c"
+    },
+    "anatomy-asset": {
+      "source": "Teddarific/skills",
+      "sourceType": "github",
+      "skillPath": "skills/anatomy-asset/SKILL.md",
+      "computedHash": "ba1402f01e522b61cdae3b40266d89995803782c6e6afdadcf39cfdad920592d"
+    }
+  }
+}
