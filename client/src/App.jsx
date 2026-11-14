@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import AuthModal from './AuthModal.jsx';
 import CheckoutModal from './CheckoutModal.jsx';
+import useDialogFocus from './useDialogFocus';
 import { api } from './api';
 import {
   availabilityLabel,
@@ -89,6 +90,7 @@ function ProductImage({ service, className = '', eager = false }) {
       src={source}
       alt={service.image_alt || `${service.name} product photo`}
       loading={eager ? 'eager' : 'lazy'}
+      decoding="async"
       onError={() => setFailed(true)}
     />
   );
@@ -103,14 +105,14 @@ function AvailabilityBadge({ value, compact = false }) {
   );
 }
 
-function ProductCard({ service, onOpen, onQuickAdd, added }) {
+function ProductCard({ service, onOpen, onQuickAdd, added, index = 0 }) {
   const area = service.pricing_mode === 'area';
   const minimum = Math.max(1, Number(service.min_qty) || 1);
   const needsOptions = area || minimum > 1 || (service.tiers || []).length > 0;
   const price = area ? Number(service.price) : priceForQty(service, minimum);
   const from = area || (service.tiers || []).length > 0 || minimum > 1;
   return (
-    <article className="shop-card">
+    <article className="shop-card" style={{ '--card-index': Math.min(index, 8) }}>
       <button
         className="shop-card-media"
         type="button"
@@ -165,6 +167,7 @@ function ProductModal({ service, onClose, onAdd }) {
   const [attempted, setAttempted] = useState(false);
   const [videoFailed, setVideoFailed] = useState(false);
   const dialog = useRef(null);
+  useDialogFocus(true, dialog, onClose);
 
   useEffect(() => {
     setQty(minimum);
@@ -172,11 +175,6 @@ function ProductModal({ service, onClose, onAdd }) {
     setHeight('');
     setAttempted(false);
     setVideoFailed(false);
-    const onKey = (event) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
     // Intentionally keyed by the product, not the parent's inline close
     // callback, so opening the modal does not reset a half-entered size.
   }, [service, minimum]);
@@ -304,20 +302,14 @@ function ProductModal({ service, onClose, onAdd }) {
 function CartDrawer({ open, cart, user, onClose, onQuantity, onRemove, onCheckout, compatibility }) {
   const total = cart.reduce((sum, line) => sum + Number(line.estimate || 0), 0);
   const count = cart.reduce((sum, line) => sum + (line.pricing_mode === 'area' ? 1 : Number(line.qty) || 0), 0);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  const dialog = useRef(null);
+  useDialogFocus(open, dialog, onClose);
 
   if (!open) return null;
 
   return (
     <div className="shop-overlay shop-overlay--drawer" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <aside className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title">
+      <aside className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title" ref={dialog}>
         <header className="cart-head">
           <div>
             <p className="eyebrow">Your selection</p>
@@ -383,10 +375,12 @@ function CartDrawer({ open, cart, user, onClose, onQuantity, onRemove, onCheckou
 }
 
 function SuccessModal({ booking, onClose }) {
+  const dialog = useRef(null);
+  useDialogFocus(Boolean(booking), dialog, onClose);
   if (!booking) return null;
   return (
     <div className="shop-overlay shop-overlay--center">
-      <div className="success-modal" role="dialog" aria-modal="true" aria-labelledby="success-title">
+      <div className="success-modal" role="dialog" aria-modal="true" aria-labelledby="success-title" ref={dialog}>
         <span className="success-mark" aria-hidden="true"><Icon name="check" size={30} /></span>
         <p className="eyebrow">Request received</p>
         <h2 id="success-title">Your moment is in our hands.</h2>
@@ -412,9 +406,38 @@ function SuccessModal({ booking, onClose }) {
 
 function Header({ user, cartCount, onCart, onSignIn, onRegister, onLogout, onMenu }) {
   const [accountOpen, setAccountOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const accountRef = useRef(null);
+  const accountButtonRef = useRef(null);
   const firstName = user?.name?.split(' ')[0] || 'Account';
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 8);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!accountOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!accountRef.current?.contains(event.target)) setAccountOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      setAccountOpen(false);
+      accountButtonRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [accountOpen]);
+
   return (
-    <header className="shop-header">
+    <header className={`shop-header${scrolled ? ' is-scrolled' : ''}`}>
       <div className="shop-container shop-nav">
         <a className="shop-brand" href="/shop" aria-label="Precious Moments shop home">
           <span className="brand-seal">PM</span>
@@ -430,14 +453,22 @@ function Header({ user, cartCount, onCart, onSignIn, onRegister, onLogout, onMen
         </nav>
         <div className="shop-nav-actions">
           {user ? (
-            <div className="account-menu">
-              <button className="shop-account" type="button" aria-expanded={accountOpen} onClick={() => setAccountOpen((value) => !value)}>
+            <div className="account-menu" ref={accountRef}>
+              <button
+                className="shop-account"
+                type="button"
+                ref={accountButtonRef}
+                aria-expanded={accountOpen}
+                aria-haspopup="true"
+                aria-controls="shop-account-popover"
+                onClick={() => setAccountOpen((value) => !value)}
+              >
                 <span className="account-avatar">{firstName.slice(0, 1).toUpperCase()}</span>
                 <span>{firstName}</span>
                 <Icon name="chevron" size={14} />
               </button>
               {accountOpen ? (
-                <div className="account-popover">
+                <div className="account-popover" id="shop-account-popover">
                   <a href="/app#bookings" onClick={() => setAccountOpen(false)}>My bookings</a>
                   {user.role === 'admin' || user.role === 'branch_admin' ? <a href="/app" onClick={() => setAccountOpen(false)}>Studio dashboard</a> : null}
                   <button type="button" onClick={() => { setAccountOpen(false); onLogout(); }}><Icon name="logout" size={15} /> Sign out</button>
@@ -455,7 +486,7 @@ function Header({ user, cartCount, onCart, onSignIn, onRegister, onLogout, onMen
             <span>Cart</span>
             {cartCount ? <b key={cartCount} className="cart-count">{cartCount}</b> : null}
           </button>
-          <button className="shop-menu-button" type="button" onClick={onMenu} aria-label="Open menu"><Icon name="menu" size={22} /></button>
+          <button className="shop-menu-button" type="button" onClick={onMenu} aria-label="Open menu" aria-haspopup="dialog" aria-controls="shop-mobile-nav"><Icon name="menu" size={22} /></button>
         </div>
       </div>
     </header>
@@ -507,6 +538,9 @@ export default function App() {
   const [added, setAdded] = useState('');
   const toastTimer = useRef(null);
   const addedTimer = useRef(null);
+  const mobileNavRef = useRef(null);
+
+  useDialogFocus(Boolean(mobileOpen), mobileNavRef, () => setMobileOpen(false));
 
   useEffect(() => {
     let cancelled = false;
@@ -550,6 +584,44 @@ export default function App() {
   }, []);
 
   useEffect(() => saveCart(cart), [cart]);
+
+  const overlayOpen = Boolean(cartOpen || product || authOpen || checkoutOpen || success || mobileOpen);
+  useEffect(() => {
+    document.body.classList.toggle('shop-no-scroll', overlayOpen);
+  }, [overlayOpen]);
+  useEffect(() => () => document.body.classList.remove('shop-no-scroll'), []);
+
+  useEffect(() => {
+    const nodes = [...document.querySelectorAll('[data-reveal]')];
+    if (!nodes.length) return undefined;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !('IntersectionObserver' in window)) {
+      nodes.forEach((node) => node.classList.add('is-revealed'));
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.remove('is-pending');
+          entry.target.classList.add('is-revealed');
+          observer.unobserve(entry.target);
+        });
+      },
+      { threshold: 0.12, rootMargin: '0px 0px -8% 0px' }
+    );
+    nodes.forEach((node) => {
+      if (node.getBoundingClientRect().top < window.innerHeight * 0.92) {
+        node.classList.add('is-revealed');
+        return;
+      }
+      node.classList.add('is-pending');
+      observer.observe(node);
+    });
+    return () => {
+      observer.disconnect();
+      nodes.forEach((node) => node.classList.remove('is-pending'));
+    };
+  }, []);
 
   useEffect(() => {
     if (!user || !pendingCheckout) return;
@@ -737,6 +809,13 @@ export default function App() {
     showToast('Signed out.');
   }
 
+  function closeCheckout() {
+    setCheckoutOpen(false);
+    const focusCart = () => document.querySelector('.shop-cart-button')?.focus({ preventScroll: true });
+    window.requestAnimationFrame(focusCart);
+    window.setTimeout(focusCart, 120);
+  }
+
   function bookingSuccess(booking) {
     setCheckoutOpen(false);
     setCart([]);
@@ -765,7 +844,7 @@ export default function App() {
 
       {mobileOpen ? (
         <div className="shop-overlay shop-overlay--drawer" onMouseDown={(event) => event.target === event.currentTarget && setMobileOpen(false)}>
-          <div className="mobile-nav" role="dialog" aria-modal="true" aria-label="Menu">
+          <div className="mobile-nav" id="shop-mobile-nav" role="dialog" aria-modal="true" aria-label="Menu" ref={mobileNavRef}>
             <div className="mobile-nav-head">
               <span className="brand-seal">PM</span>
               <button className="icon-button" type="button" onClick={() => setMobileOpen(false)} aria-label="Close menu">×</button>
@@ -849,7 +928,7 @@ export default function App() {
 
         <section className="shop-catalog" id="catalog">
           <div className="shop-container">
-            <div className="catalog-head">
+            <div className="catalog-head" data-reveal>
               <div>
                 <p className="eyebrow">The collection</p>
                 <h2>Find your <em>something lovely.</em></h2>
@@ -868,23 +947,23 @@ export default function App() {
               </div>
             </div>
 
-            <div className="catalog-tabs" role="tablist" aria-label="Filter by category">
-              <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All pieces <span>{services.length}</span></button>
-              <button type="button" className={filter === 'booths' ? 'active' : ''} onClick={() => setFilter('booths')} id="booths">Booths <span>{services.filter(isBooth).length}</span></button>
+            <div className="catalog-tabs" role="group" aria-label="Filter by category">
+              <button type="button" aria-pressed={filter === 'all'} className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All pieces <span>{services.length}</span></button>
+              <button type="button" aria-pressed={filter === 'booths'} className={filter === 'booths' ? 'active' : ''} onClick={() => setFilter('booths')} id="booths">Booths <span>{services.filter(isBooth).length}</span></button>
               {categoryNames.map((category) => (
-                <button type="button" key={category} className={filter === category ? 'active' : ''} onClick={() => setFilter(category)}>
+                <button type="button" key={category} aria-pressed={filter === category} className={filter === category ? 'active' : ''} onClick={() => setFilter(category)}>
                   {category} <span>{services.filter((service) => service.category === category).length}</span>
                 </button>
               ))}
             </div>
 
-            <div className="catalog-resultbar">
+            <div className="catalog-resultbar" aria-live="polite">
               <span>{loading ? 'Opening the collection…' : `${plural(filtered.length, 'piece')}${query ? ` for “${query}”` : ''}`}</span>
               {!loading ? <span className="catalog-sort"><Icon name="spark" size={15} /> Studio favourites first</span> : null}
             </div>
 
             {loading ? (
-              <div className="shop-grid" aria-label="Loading products">
+              <div className="shop-grid" aria-label="Loading products" aria-busy="true">
                 {Array.from({ length: 8 }).map((_, index) => (
                   <div className="shop-card skeleton-card" key={index}>
                     <span className="skeleton skeleton-media" />
@@ -901,13 +980,14 @@ export default function App() {
               </div>
             ) : filtered.length ? (
               <div className="shop-grid">
-                {filtered.map((service) => (
+                {filtered.map((service, index) => (
                   <ProductCard
                     key={service.id}
                     service={service}
                     onOpen={setProduct}
                     onQuickAdd={quickAdd}
                     added={added === service.id}
+                    index={index}
                   />
                 ))}
               </div>
@@ -924,8 +1004,8 @@ export default function App() {
 
         <section className="shop-how" id="how">
           <div className="shop-container">
-            <div className="how-head"><p className="eyebrow">A simple, careful process</p><h2>From “I love that” to <em>“it’s ours.”</em></h2></div>
-            <div className="how-grid">
+            <div className="how-head" data-reveal><p className="eyebrow">A simple, careful process</p><h2>From “I love that” to <em>“it’s ours.”</em></h2></div>
+            <div className="how-grid" data-reveal>
               <article><span>01</span><h3>Browse &amp; build your cart</h3><p>Explore the live collection without an account. Your cart stays saved on this device.</p></article>
               <article><span>02</span><h3>Send the date</h3><p>Create an account only when you’re ready. Tell us the event or pickup details and send one request.</p></article>
               <article><span>03</span><h3>The studio confirms</h3><p>We check the calendar, physical booth units, and final pricing, then send the 50% reservation details.</p></article>
@@ -936,7 +1016,7 @@ export default function App() {
 
       <Footer />
 
-      <button className={`floating-cart ${cartCount ? 'has-items' : ''}`} type="button" onClick={() => setCartOpen(true)} aria-label={`Open cart, ${cartCount} items`}>
+      <button className={`floating-cart ${cartCount ? 'has-items' : ''}`} type="button" onClick={() => setCartOpen(true)} aria-label={`Open cart, ${cartCount} ${cartCount === 1 ? 'item' : 'items'}`}>
         <Icon name="bag" size={20} />
         <span>{cartCount ? plural(cartCount, 'item') : 'Your cart'}</span>
         {cartCount ? <strong>{money(cartTotal)}</strong> : null}
@@ -986,7 +1066,7 @@ export default function App() {
         open={checkoutOpen}
         cart={cart}
         user={user}
-        onClose={() => setCheckoutOpen(false)}
+        onClose={closeCheckout}
         onRequireAuth={requireCheckoutAuth}
         onSuccess={bookingSuccess}
       />
@@ -994,10 +1074,11 @@ export default function App() {
       <SuccessModal booking={success} onClose={() => setSuccess(null)} />
 
       {toast ? (
-        <div className={`shop-toast shop-toast--${toast.tone}`} role="status">
+        <div key={toast.message} className={`shop-toast shop-toast--${toast.tone}`} role={toast.tone === 'error' ? 'alert' : 'status'}>
           <span>{toast.tone === 'error' ? '!' : '✓'}</span>
           <p>{toast.message}</p>
           <button type="button" onClick={() => setToast(null)} aria-label="Dismiss notification"><Icon name="close" size={14} /></button>
+          <i className="shop-toast-progress" aria-hidden="true" />
         </div>
       ) : null}
     </div>

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import useDialogFocus from './useDialogFocus';
 import { api } from './api';
 import { cartCompatibility, estimateLine, money, todayISO, tomorrowISO } from './lib';
 
@@ -25,6 +26,7 @@ export default function CheckoutModal({ open, cart, user, onClose, onRequireAuth
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const dialog = useRef(null);
+  useDialogFocus(open, dialog, busy ? undefined : onClose);
 
   useEffect(() => {
     if (!open) return;
@@ -64,15 +66,6 @@ export default function CheckoutModal({ open, cart, user, onClose, onRequireAuth
       cancelled = true;
     };
   }, [open, user]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event) => {
-      if (event.key === 'Escape' && !busy) onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, busy, onClose]);
 
   if (!open) return null;
 
@@ -286,7 +279,12 @@ export default function CheckoutModal({ open, cart, user, onClose, onRequireAuth
             {error ? <p className="shop-error" role="alert">{error}</p> : null}
             <div className="checkout-actions">
               <button className="shop-button" type="button" onClick={onClose} disabled={busy}>Back to cart</button>
-              <button className="shop-button shop-button--primary" type="submit" disabled={busy || !compatibility.ok || !canSubmitRole}>
+              <button
+                className={`shop-button shop-button--primary${busy ? ' is-loading' : ''}`}
+                type="submit"
+                aria-busy={busy}
+                disabled={busy || !compatibility.ok || !canSubmitRole}
+              >
                 {busy ? 'Sending request…' : 'Send booking request'}
               </button>
             </div>

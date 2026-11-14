@@ -173,7 +173,12 @@ export default function AuthModal({ open, initialMode = 'register', reason = '',
                 />
               </label>
               {error ? <p className="shop-error" role="alert">{error}</p> : null}
-              <button className="shop-button shop-button--primary" type="submit" disabled={busy}>
+              <button
+                className={`shop-button shop-button--primary${busy ? ' is-loading' : ''}`}
+                type="submit"
+                aria-busy={busy}
+                disabled={busy}
+              >
                 {busy ? 'Checking…' : 'Verify and continue'}
               </button>
               <button
@@ -300,7 +305,12 @@ export default function AuthModal({ open, initialMode = 'register', reason = '',
                 </div>
               )}
               {error ? <p className="shop-error" role="alert">{error}</p> : null}
-              <button className="shop-button shop-button--primary" type="submit" disabled={busy}>
+              <button
+                className={`shop-button shop-button--primary${busy ? ' is-loading' : ''}`}
+                type="submit"
+                aria-busy={busy}
+                disabled={busy}
+              >
                 {busy ? 'Please wait…' : mode === 'register' ? 'Create account and continue' : 'Sign in and continue'}
               </button>
             </form>

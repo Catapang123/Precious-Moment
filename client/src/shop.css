@@ -10,7 +10,7 @@
   --rose-soft: #c68ba4;
   --ink: #fbeef4;
   --ink-soft: #c9adba;
-  --ink-faint: #92727f;
+  --ink-faint: #a88c99;
   --plum: #0b0509;
   --gold: #e2a0b8;
   --line: rgba(255, 170, 206, 0.14);
@@ -28,6 +28,8 @@
   --glow: rgba(240, 85, 155, 0.18);
   --serif: "Instrument Serif", Georgia, "Times New Roman", serif;
   --sans: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --ease-out: cubic-bezier(0.22, 0.8, 0.24, 1);
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.18);
   --shadow-soft: 0 20px 60px rgba(0, 0, 0, 0.38);
   --shadow-card: 0 30px 90px rgba(0, 0, 0, 0.52);
   --radius: 16px;
@@ -44,6 +46,7 @@
 html {
   scroll-behavior: smooth;
   scroll-padding-top: 96px;
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -54,6 +57,10 @@ body {
   font-size: 15px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+}
+
+body.shop-no-scroll {
+  overflow: hidden;
 }
 
 button,
@@ -67,6 +74,7 @@ textarea {
 button,
 a {
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 button {
@@ -97,6 +105,11 @@ h3 {
   font-weight: 400;
   line-height: 1.03;
   letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
 }
 
 h1 em,
@@ -178,6 +191,13 @@ h2 em {
   background: rgba(255, 247, 243, 0.86);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
+  transition: background 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.shop-header.is-scrolled {
+  background: rgba(8, 5, 8, 0.9);
+  border-bottom-color: var(--line);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.26);
 }
 
 .shop-nav {
@@ -456,6 +476,14 @@ h2 em {
   font-weight: 800;
 }
 
+.shop-account svg {
+  transition: transform 0.2s var(--ease-out);
+}
+
+.shop-account[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
 .account-avatar {
   display: grid;
   place-items: center;
@@ -503,6 +531,12 @@ h2 em {
   color: var(--rose-deep);
 }
 
+.account-popover a:focus-visible,
+.account-popover button:focus-visible {
+  background: var(--blush-2);
+  color: var(--rose-deep);
+}
+
 /* ---------- Hero ---------- */
 
 .shop-hero {
@@ -529,6 +563,26 @@ h2 em {
   grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
   align-items: center;
   gap: 56px;
+}
+
+.hero-copy > * {
+  animation: heroCopyIn 0.55s var(--ease-out) both;
+}
+
+.hero-copy > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.hero-copy > *:nth-child(3) {
+  animation-delay: 110ms;
+}
+
+.hero-copy > *:nth-child(4) {
+  animation-delay: 160ms;
+}
+
+.hero-copy > *:nth-child(5) {
+  animation-delay: 210ms;
 }
 
 .hero-copy h1 {
@@ -575,6 +629,7 @@ h2 em {
   font-family: var(--serif);
   font-size: 1.5rem;
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
 .hero-board {
@@ -695,6 +750,7 @@ h2 em {
   gap: 10px;
   margin-top: 16px;
   padding-top: 15px;
+  padding-right: 58px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   color: rgba(255, 247, 243, 0.58);
 }
@@ -857,7 +913,11 @@ h2 em {
   margin-bottom: 16px;
   overflow-x: auto;
   padding-bottom: 4px;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+}
+
+.catalog-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .catalog-tabs button {
@@ -942,16 +1002,23 @@ h2 em {
   background: var(--paper-2);
   box-shadow: 0 3px 10px rgba(53, 27, 39, 0.025);
   transition:
-    transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 0.28s var(--ease-out),
     box-shadow 0.28s ease,
     border-color 0.28s ease;
-  animation: cardIn 0.45s ease both;
+  animation: cardIn 0.45s var(--ease-out) backwards;
+  animation-delay: calc(var(--card-index, 0) * 45ms);
 }
 
-.shop-card:hover {
+.shop-card:hover,
+.shop-card:focus-within {
   transform: translateY(-5px);
   border-color: rgba(240, 85, 155, 0.22);
   box-shadow: 0 20px 44px rgba(53, 27, 39, 0.11);
+}
+
+.shop-card-media:focus-visible {
+  outline-offset: -4px;
+  outline-width: 3px;
 }
 
 .shop-card-media {
@@ -970,10 +1037,11 @@ h2 em {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: transform 0.6s var(--ease-out);
 }
 
-.shop-card:hover .shop-card-media > img {
+.shop-card:hover .shop-card-media > img,
+.shop-card:focus-within .shop-card-media > img {
   transform: scale(1.045);
 }
 
@@ -1003,7 +1071,8 @@ h2 em {
   transition: opacity 0.25s ease;
 }
 
-.shop-card:hover .shop-card-scrim {
+.shop-card:hover .shop-card-scrim,
+.shop-card:focus-within .shop-card-scrim {
   opacity: 1;
 }
 
@@ -1026,6 +1095,7 @@ h2 em {
 }
 
 .shop-card:hover .shop-card-hint,
+.shop-card:focus-within .shop-card-hint,
 .shop-card-media:focus-visible .shop-card-hint {
   opacity: 1;
   transform: none;
@@ -1180,6 +1250,7 @@ h2 em {
   font-weight: 400;
   color: var(--ink);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .shop-price > span {
@@ -2804,6 +2875,8 @@ textarea.shop-input {
 
 @media (max-width: 480px) {
   .shop-container { width: calc(100% - 26px); }
+  .hero-actions { display: grid; grid-template-columns: 1fr; }
+  .hero-actions .shop-button { width: 100%; }
   .brand-name { font-size: 1.18rem; }
   .brand-sub { font-size: 0.45rem; }
   .brand-seal { width: 36px; height: 36px; font-size: 0.9rem; }
@@ -3197,4 +3270,227 @@ body {
 .mobile-nav nav a,
 .mobile-nav nav button {
   border-bottom-color: var(--line);
+}
+
+/* =========================================================
+   Interaction polish
+   Focus feedback, touch sizing, scroll reveals, and quiet
+   loading/toast states layered over the existing shop UI.
+   ========================================================= */
+
+[data-reveal] {
+  transition:
+    opacity 0.55s var(--ease-out),
+    transform 0.55s var(--ease-out);
+}
+
+[data-reveal].is-pending {
+  opacity: 0;
+  transform: translateY(18px);
+}
+
+[data-reveal].is-revealed {
+  opacity: 1;
+  transform: none;
+}
+
+.shop-card:focus-within {
+  transform: translateY(-3px);
+}
+
+.shop-card:has(.shop-card-media:focus-visible) {
+  transform: translateY(-3px);
+}
+
+.shop-button.is-loading {
+  cursor: progress;
+}
+
+.shop-button.is-loading:disabled {
+  opacity: 0.78;
+}
+
+.shop-button.is-loading::before {
+  content: "";
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.85;
+  animation: shopButtonSpin 0.65s linear infinite;
+}
+
+.shop-cart-button:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.catalog-tabs button:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.shop-toast {
+  overflow: hidden;
+  padding-bottom: 13px;
+}
+
+.shop-toast button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  border-radius: 50%;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.shop-toast button:hover {
+  background: rgba(27, 7, 16, 0.08);
+  color: #1a0712;
+}
+
+.shop-toast-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--rose);
+  transform-origin: left center;
+  animation: shopToastTimer 3.6s linear forwards;
+}
+
+.shop-toast--error .shop-toast-progress {
+  background: var(--danger);
+}
+
+.shop-toast--neutral .shop-toast-progress {
+  background: var(--gold);
+}
+
+.shop-overlay,
+.cart-lines,
+.product-modal,
+.checkout-modal,
+.mobile-nav {
+  overscroll-behavior: contain;
+}
+
+.floating-cart {
+  bottom: calc(18px + env(safe-area-inset-bottom));
+}
+
+.shop-toast {
+  bottom: calc(20px + env(safe-area-inset-bottom));
+}
+
+.cart-total strong,
+.checkout-total strong,
+.product-price-line strong,
+.product-form-footer strong,
+.success-summary strong,
+.checkout-line > span {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes shopButtonSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shopToastTimer {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+@keyframes heroCopyIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .shop-toast {
+    bottom: calc(80px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (hover: none) {
+  .shop-card:hover:not(:focus-within) {
+    transform: none;
+    border-color: var(--line);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  }
+
+  .shop-card:hover:not(:focus-within) .shop-card-media > img {
+    transform: none;
+  }
+
+  .shop-card:hover:not(:focus-within) .shop-card-scrim {
+    opacity: 0;
+  }
+
+  .shop-card:hover:not(:focus-within) .shop-card-hint {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  .shop-button:hover,
+  .shop-cart-button:hover {
+    transform: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .shop-button--small,
+  .catalog-tabs button,
+  .icon-button {
+    min-height: 40px;
+  }
+
+  .icon-button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .shop-menu-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .shop-account {
+    min-height: 44px;
+  }
+
+  .account-popover a,
+  .account-popover button {
+    min-height: 42px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal],
+  [data-reveal].is-pending {
+    opacity: 1;
+    transform: none;
+  }
+
+  .shop-card {
+    animation-delay: 0ms;
+  }
+
+  .shop-button.is-loading::before {
+    animation: none;
+    border-right-color: currentColor;
+  }
+
+  .shop-toast-progress {
+    animation: none;
+    opacity: 0.35;
+  }
 }
