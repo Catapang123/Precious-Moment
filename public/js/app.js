@@ -293,7 +293,7 @@ const KNOWN_IMAGE_ERRORS = new Set(Object.values(IMAGE_ERRORS));
 const VIDEO_ERRORS = {
   format: 'Unsupported video format. Please upload MP4 or WEBM.',
   size: 'Video exceeds the 25 MB limit.',
-  upload: 'Unable to upload the video. Please check your connection and try again.',
+  upload: 'Unable to upload the video. Please try again.',
 };
 
 const DESIGN_MAX_BYTES = 10 * 1024 * 1024;
@@ -4179,9 +4179,7 @@ async function uploadProductVideo(input) {
     const message =
       error?.status === 413
         ? VIDEO_ERRORS.size
-        : [400, 415, 503].includes(error?.status) && error.message
-          ? error.message
-          : VIDEO_ERRORS.upload;
+        : error?.message || VIDEO_ERRORS.upload;
     videoMessage(card, message);
     input.disabled = false;
     input.value = '';

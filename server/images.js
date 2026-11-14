@@ -307,14 +307,14 @@ export async function saveProductVideo(buffer, video) {
     });
     if (error) {
       console.error('Product video storage failed:', error.message);
-      throw Object.assign(new Error('Unable to upload the video. Please check your connection and try again.'), {
+      throw Object.assign(new Error('The video could not be saved to storage. Please try again.'), {
         status: 502,
       });
     }
     const { data } = client.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(filename);
     if (!data?.publicUrl) {
       console.error('Product video storage did not return a public URL.');
-      throw Object.assign(new Error('Unable to upload the video. Please check your connection and try again.'), {
+      throw Object.assign(new Error('The video was uploaded but its address could not be created. Please try again.'), {
         status: 502,
       });
     }
