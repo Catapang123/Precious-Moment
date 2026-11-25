@@ -197,15 +197,9 @@ try {
   assert.equal(malformedCookie.status, 401);
   pass('health, readiness, cache headers, and malformed-cookie handling are safe');
 
-  // Guests land on the marketing page at the root; it links into the catalog.
   const root = await publicSession('/');
-  assert.equal(root.status, 200);
-  assert.match(root.body, /Precious Moments/);
-  assert.match(root.body, /href="\/shop"/);
-  assert.match(root.body, /\/assets\/landing\.js/);
-  const landingScript = await publicSession('/assets/landing.js');
-  assert.equal(landingScript.status, 200);
-  assert.match(landingScript.headers.get('content-type') || '', /javascript/);
+  assert.equal(root.status, 302);
+  assert.equal(root.headers.get('location'), '/shop');
   const shop = await publicSession('/shop/');
   assert.equal(shop.status, 200);
   assert.match(shop.body, /Precious Moments/);
@@ -215,7 +209,7 @@ try {
   const shopAssetResponse = await publicSession(shopAsset[0]);
   assert.equal(shopAssetResponse.status, 200);
   assert.match(shopAssetResponse.headers.get('content-type') || '', /javascript/);
-  pass('the landing page serves at the root and the public catalog opens without a session');
+  pass('the public catalog opens without a session and serves its compiled assets');
 
   const welcome = await publicSession('/welcome');
   assert.equal(welcome.status, 302);
