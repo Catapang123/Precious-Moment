@@ -3847,9 +3847,11 @@ export function createApp(store) {
   // their existing dashboard entry point at /app.
   /* ---------- Page routes and the 404 fallback ---------- */
 
+  // Guests land on the standalone marketing page; it links into the catalog at
+  // /shop. Signed-in customers and staff still go straight to the dashboard.
   app.get('/', (req, res) => {
     if (req.user) return res.redirect('/app');
-    res.redirect('/shop');
+    res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
   });
   // The shop is the single public entry point now. Keep the old marketing and
   // login URLs as redirects so bookmarks, password-reset emails, and old links
